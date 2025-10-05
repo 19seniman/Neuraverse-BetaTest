@@ -11,7 +11,7 @@ dotenv.config();
 const colors = {
   reset: '\x1b[0m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m',
   red: '\x1b[31m', white: '\x1b[37m', bold: '\x1b[1m',
-  magenta: '\x1b[35m', blue: '\x1b[34m', gray: '\x1b[90m', // Added new colors
+  magenta: '\x1b[35m', blue: '\x1b[34m', gray: '\x1b[90m', 
 };
 
 const logger = {
@@ -40,7 +40,6 @@ const logger = {
     },
     countdown: (msg) => process.stdout.write(`\r${colors.blue}[⏰] ${msg}${colors.reset}`),
 };
-// --- END NEW LOGGER ---
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const ask = (rl, q) => new Promise((res) => rl.question(q, res));
@@ -127,6 +126,21 @@ async function runTaskWithRetries(taskFn, taskName, maxRetries = 3) {
         }
     }
 }
+
+// Helper function untuk hitungan mundur 24 jam
+async function countdownAndDelay(ms) {
+    const duration = Math.round(ms / 1000); // seconds
+    for (let i = duration; i > 0; i--) {
+        const h = Math.floor(i / 3600);
+        const m = Math.floor((i % 3600) / 60);
+        const s = i % 60;
+        const timeString = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        logger.countdown(`Next cycle starts in: ${timeString}`);
+        await delay(1000);
+    }
+    process.stdout.write('\n'); // New line after countdown
+}
+
 
 const NEURA_RPC = 'https://testnet.rpc.neuraprotocol.io/';
 const SEPOLIA_RPC = 'https://ethereum-sepolia-rpc.publicnode.com/';
@@ -626,26 +640,22 @@ class NeuraBot {
   }
 }
 
-// Fungsi createNewWalletFlow dihapus/dilewatkan karena permintaan user
-
-async function loadExistingWalletsFlow(proxies, rl) {
+async function loadExistingWalletsFlow(
+  proxies, 
+  bridgeSepoliaToNeuraAmount, 
+  bridgeNeuraToSepoliaAmount, 
+  swapAmountZtusd, 
+  swapRepeats, 
+  ztUSDToken, 
+  mollyToken
+) {
   const pks = Object.keys(process.env).filter(k => k.startsWith('PRIVATE_KEY_')).map(k => process.env[k]).filter(Boolean);
   if (!pks.length) { logger.error('No private keys found in .env file.'); return; }
   logger.info(`Found ${pks.length} wallets in .env file.`);
-
-  // Menghapus menu pilihan dan langsung meminta input parameter untuk All Tasks (mode otomatis)
-  const bridgeSepoliaToNeuraAmount = await ask(rl, 'Amount to bridge Sepolia→Neura (enter 0 to skip): ');
-  const bridgeNeuraToSepoliaAmount = await ask(rl, 'Amount to bridge Neura→Sepolia (enter 0 to skip): ');
-  const swapAmountZtusd = await ask(rl, 'Amount of ZTUSD to swap to MOLLY (enter 0 to skip): ');
-  const swapRepeatStr = await ask(rl, 'How many times to perform ZTUSD ↔ MOLLY swap? (e.g., 1): ');
-  const swapRepeats = parseInt(swapRepeatStr, 10) || 0;
   
-  const tokens = await fetchAvailableTokens();
-  const ztUSDToken = tokens.find(t => t.symbol.toUpperCase() === 'ZTUSD');
-  const mollyToken = tokens.find(t => t.symbol.toUpperCase() === 'MOLLY');
-  
+  // Parameter check
   if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && (!ztUSDToken || !mollyToken)) {
-    logger.warn('Could not find ZTUSD or MOLLY in token list. Swap step will be skipped.');
+    logger.warn('Could not find ZTUSD or MOLLY in token list. Swap step will be skipped for this cycle.');
   }
 
   const wallets = Object.keys(process.env)
@@ -660,7 +670,7 @@ async function loadExistingWalletsFlow(proxies, rl) {
 
     const pk = wallets[idx];
     const bot = new NeuraBot(pk, proxy);
-    logger.section(`Wallet ${bot.address.slice(0,10)}... (proxy ${proxy ? 'ON' : 'OFF'})`);
+    logger.section(`[Wallet ${idx+1}/${wallets.length}] ${bot.address.slice(0,10)}... (proxy ${proxy ? 'ON' : 'OFF'})`);
 
     try {
       await bot.executeWithRetry(() => bot.login());
@@ -690,8 +700,9 @@ async function loadExistingWalletsFlow(proxies, rl) {
         logger.warn('Skipping Sepolia → Neura Bridge: Amount is 0 or invalid. Ensure you have ANKR gas on Neura for the swap.');
       }
 
-      // 4. Swap (ZTUSD <-> MOLLY) - SEKARANG ADA GAS
-      if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && ztUSDToken && mollyToken) {
+      // 4. Swap (ZTUSD <-> MOLLY)
+      const canSwap = parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && ztUSDToken && mollyToken;
+      if (canSwap) {
         for(let j = 0; j < swapRepeats; j++) {
             tasks.push({
                 name: `[Swap Cycle ${j+1}/${swapRepeats}] ZTUSD → MOLLY`,
@@ -713,8 +724,6 @@ async function loadExistingWalletsFlow(proxies, rl) {
                 }
             });
         }
-      } else if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0) {
-           logger.warn('Skipping Swap: Tokens ZTUSD or MOLLY not found.');
       }
       
       // 5. Bridge (Neura -> Sepolia)
@@ -752,22 +761,59 @@ async function loadExistingWalletsFlow(proxies, rl) {
 
 async function main() {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  // Pass proxies to the global context inside main scope if needed by other functions, but better to pass it as argument.
   const proxies = fs.existsSync('proxies.txt') ? fs.readFileSync('proxies.txt','utf-8').split('\n').filter(Boolean) : [];
   
-  while (true) {
-    logger.banner();
-    proxies.length ? logger.info(`Loaded ${proxies.length} proxies.\n`) : logger.warn('No proxies loaded. Running in direct mode.\n');
-    const choice = await ask(rl, `Choose an option:
-1. use wallet from .env
-
-Enter number: `);
-    if (choice === '1') { await loadExistingWalletsFlow(proxies, rl);
-    } else { logger.error('Invalid choice. Exiting.'); break; } // Exit jika input tidak valid
-    await ask(rl, '\nPress Enter to return to the main menu...');
+  logger.banner();
+  proxies.length ? logger.info(`Loaded ${proxies.length} proxies.\n`) : logger.warn('No proxies loaded. Running in direct mode.\n');
+  
+  // --- PENGATURAN PARAMETER AWAL (DILAKUKAN SEKALI) ---
+  logger.section('PENGATURAN PARAMETER OTOMATIS');
+  const bridgeSepoliaToNeuraAmount = await ask(rl, 'Amount to bridge Sepolia→Neura (enter 0 to skip): ');
+  const bridgeNeuraToSepoliaAmount = await ask(rl, 'Amount to bridge Neura→Sepolia (enter 0 to skip): ');
+  const swapAmountZtusd = await ask(rl, 'Amount of ZTUSD to swap to MOLLY (enter 0 to skip): ');
+  const swapRepeatStr = await ask(rl, 'How many times to perform ZTUSD ↔ MOLLY swap? (e.g., 1): ');
+  const swapRepeats = parseInt(swapRepeatStr, 10) || 0;
+  
+  const tokens = await fetchAvailableTokens();
+  const ztUSDToken = tokens.find(t => t.symbol.toUpperCase() === 'ZTUSD');
+  const mollyToken = tokens.find(t => t.symbol.toUpperCase() === 'MOLLY');
+  
+  if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && (!ztUSDToken || !mollyToken)) {
+    logger.error('Could not find ZTUSD or MOLLY in token list. Please fix the token list or set swap amount to 0.');
+    rl.close();
+    return;
   }
-  rl.close();
-  logger.summary('Bot exited.'); // Use new summary logger
+  
+  rl.close(); // Tutup RL karena input dari user sudah selesai
+
+  // --- AUTOMATION LOOP 24 JAM ---
+  const DELAY_DURATION = 24 * 60 * 60 * 1000; // 24 jam dalam ms
+
+  while (true) {
+    const cycleStartTime = Date.now();
+    logger.section(`STARTING NEW AUTOMATED CYCLE: ${new Date().toLocaleString()}`);
+    
+    await loadExistingWalletsFlow(
+      proxies,
+      bridgeSepoliaToNeuraAmount,
+      bridgeNeuraToSepoliaAmount,
+      swapAmountZtusd,
+      swapRepeats,
+      ztUSDToken,
+      mollyToken
+    );
+    
+    const elapsed = Date.now() - cycleStartTime;
+    const waitTime = DELAY_DURATION - elapsed;
+    
+    if (waitTime > 0) {
+      logger.section(`CYCLE COMPLETE. WAITING 24 HOURS UNTIL NEXT RUN.`);
+      await countdownAndDelay(waitTime);
+    } else {
+      logger.warn('Previous cycle took longer than 24 hours. Starting next cycle immediately.');
+    }
+  }
+  // Tidak perlu ada rl.close() di sini karena loop berjalan terus
 }
 
 main().catch((err) => {
