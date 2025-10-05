@@ -11,7 +11,7 @@ dotenv.config();
 const colors = {
   reset: '\x1b[0m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m',
   red: '\x1b[31m', white: '\x1b[37m', bold: '\x1b[1m',
-  magenta: '\x1b[35m', blue: '\x1b[34m', gray: '\x1b[90m', // Added new colors
+  magenta: '\x1b[35m', blue: '\x1b[34m', gray: '\x1b[90m', 
 };
 
 const logger = {
@@ -116,7 +116,8 @@ async function runTaskWithRetries(taskFn, taskName, maxRetries = 3) {
             logger.success(`Task "${taskName}" completed successfully.`);
             return;
         } catch (error) {
-            logger.warn(`Attempt ${i + 1}/${maxRetries} for task "${taskName}" failed.`);
+            const message = error?.message || error?.shortMessage || 'An unknown error occurred.';
+            logger.warn(`Attempt ${i + 1}/${maxRetries} for task "${taskName}" failed: ${message}`);
             if (i === maxRetries - 1) {
                 logger.error(`Task "${taskName}" failed after ${maxRetries} attempts. Moving to the next task.`);
             } else {
@@ -625,302 +626,118 @@ class NeuraBot {
   }
 }
 
-async function createNewWalletFlow(proxies, rl) {
-  if (!process.env.FUNDER_PRIVATE_KEY) {
-    logger.error('FUNDER_PRIVATE_KEY is not set in the .env file. Cannot proceed.');
-    return;
-  }
-
-  const funderWallet = new ethers.Wallet(process.env.FUNDER_PRIVATE_KEY);
-  const sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_RPC);
-  const funderSepoliaWallet = funderWallet.connect(sepoliaProvider);
-  const funderAddr = funderSepoliaWallet.address;
-  logger.info(`Funder wallet loaded: ${funderAddr}`);
-
-  const nStr = await ask(rl, 'How many new wallets do you want to create? ');
-  const n = parseInt(nStr, 10);
-  if (!Number.isFinite(n) || n <= 0) { logger.error('Invalid number.'); return; }
-
-  let existing = [];
-  if (fs.existsSync('wallets.json')) {
-    try { existing = JSON.parse(fs.readFileSync('wallets.json')); } catch {}
-    if (!Array.isArray(existing)) existing = [];
-  }
-
-  for (let i = 0; i < n; i++) {
-    logger.section(`Wallet ${i+1}/${n}`); // Use new section logger
-    const wallet = ethers.Wallet.createRandom();
-    const addr = wallet.address;
-    const pk = wallet.privateKey;
-
-    logger.success(`New wallet created:\nAddress: ${addr}`);
-    existing.push({ address: addr, privateKey: pk });
-    fs.writeFileSync('wallets.json', JSON.stringify(existing, null, 2));
-    logger.success('Wallet saved to wallets.json.');
-
-    const proxy = proxies.length ? proxies[Math.floor(Math.random()*proxies.length)] : null;
-
-    const bot = new NeuraBot(pk, proxy);
-
-    try {
-      const feeAmount = ethers.parseEther('0.0000001');
-      logger.loading(`Funding new wallet with ${ethers.formatEther(feeAmount)} Sepolia ETH for gas...`);
-      const fundTx = await funderSepoliaWallet.sendTransaction({ to: addr, value: feeAmount });
-      await fundTx.wait();
-      logger.success(`Funding successful.`);
-
-      await runTaskWithRetries(() => bot.login(), "Login");
-      await runTaskWithRetries(async () => {
-        await bot.claimFaucet();
-      }, "Claim Faucet");
-
-      const tANKR = new ethers.Contract(CONTRACTS.SEPOLIA.TANKR, ABIS.ERC20, bot.sepoliaWallet);
-      const targetTankr = ethers.parseEther('3');
-      const maxAttempts = 18; 
-      logger.loading('Waiting for faucet tokens (tANKR) to arrive on Sepolia...');
-      let ok = false;
-      for (let k = 1; k <= maxAttempts; k++) {
-        const bal = await tANKR.balanceOf(addr);
-        logger.info(`Check ${k}/${maxAttempts}: tANKR = ${ethers.formatEther(bal)}`);
-        if (bal >= targetTankr) { ok = true; break; }
-        logger.countdown(`Checking in 10s (attempt ${k+1}/${maxAttempts})...`); // Use new countdown
-        await delay(10_000);
-      }
-      if (!ok) logger.warn('tANKR from faucet not reached 3 yet; will still proceed with available balance.');
-
-      await runTaskWithRetries(() => bot.claimPulses(), "Claim Pulses");
-      await runTaskWithRetries(() => bot.chatWithAgent(), "Chat with Agent");
-      await runTaskWithRetries(() => bot.claimTasks(), "Claim Tasks");
-
-      const balNow = await tANKR.balanceOf(addr);
-      const amountToSend = balNow >= targetTankr ? targetTankr : balNow;
-      if (amountToSend > 0n) {
-        logger.loading(`Transferring ${ethers.formatEther(amountToSend)} tANKR to funder ${funderAddr} on Sepolia...`);
-        const tx = await tANKR.transfer(funderAddr, amountToSend);
-        await tx.wait();
-        logger.success(`Sent ${ethers.formatEther(amountToSend)} tANKR to funder.`);
-      } else {
-        logger.warn('No tANKR to send to funder yet.');
-      }
-
-    } catch (e) {
-      logger.error(`Flow failed for new wallet ${addr}: ${e?.message || String(e)}`);
-      
-    }
-  }
-}
+// Fungsi createNewWalletFlow dihapus/dilewatkan karena permintaan user
 
 async function loadExistingWalletsFlow(proxies, rl) {
   const pks = Object.keys(process.env).filter(k => k.startsWith('PRIVATE_KEY_')).map(k => process.env[k]).filter(Boolean);
   if (!pks.length) { logger.error('No private keys found in .env file.'); return; }
   logger.info(`Found ${pks.length} wallets in .env file.`);
 
-  const choice = await ask(rl, `
-Choose task(s) to run for each wallet:
-1. All Tasks
-2. Faucet
-3. Swap
-4. Bridge
-5. Claim All Tasks & Pulses Only
-Enter number: `);
+  // Menghapus menu pilihan dan langsung meminta input parameter untuk All Tasks (mode otomatis)
+  const bridgeSepoliaToNeuraAmount = await ask(rl, 'Amount to bridge Sepolia→Neura (enter 0 to skip): ');
+  const bridgeNeuraToSepoliaAmount = await ask(rl, 'Amount to bridge Neura→Sepolia (enter 0 to skip): ');
+  const swapAmountZtusd = await ask(rl, 'Amount of ZTUSD to swap to MOLLY (enter 0 to skip): ');
+  const swapRepeatStr = await ask(rl, 'How many times to perform ZTUSD ↔ MOLLY swap? (e.g., 1): ');
+  const swapRepeats = parseInt(swapRepeatStr, 10) || 0;
   
-    if (choice === '1') {
-    const bridgeSepoliaToNeuraAmount = await ask(rl, 'Amount to bridge Sepolia→Neura (enter 0 to skip): ');
-    const bridgeNeuraToSepoliaAmount = await ask(rl, 'Amount to bridge Neura→Sepolia (enter 0 to skip): ');
-
-    const swapAmountZtusd = await ask(rl, 'Amount of ZTUSD to swap to MOLLY (enter 0 to skip): ');
-
-    const tokens = await fetchAvailableTokens();
-    const ztUSDToken = tokens.find(t => t.symbol.toUpperCase() === 'ZTUSD');
-    const mollyToken = tokens.find(t => t.symbol.toUpperCase() === 'MOLLY');
-    if (!ztUSDToken || !mollyToken) {
-      logger.warn('Could not find ZTUSD or MOLLY in token list. Swap step will be skipped.');
-    }
-
-    const wallets = Object.keys(process.env)
-      .filter(k => k.startsWith('PRIVATE_KEY_'))
-      .map(k => process.env[k])
-      .filter(Boolean);
-    if (!wallets.length) { logger.error('No private keys found in .env file.'); return; }
-    logger.info(`Found ${wallets.length} wallets in .env file.`);
-
-    for (let idx = 0; idx < wallets.length; idx++) {
-      const proxy = (proxies || []).length // Corrected from global?.proxies
-        ? proxies[Math.floor(Math.random() * proxies.length)]
-        : undefined;
-
-      const pk = wallets[idx];
-      const bot = new NeuraBot(pk, proxy);
-      logger.section(`Wallet ${bot.address.slice(0,10)}... (proxy ${proxy ? 'ON' : 'OFF'})`); // Use new section logger
-
-      try {
-        await bot.executeWithRetry(() => bot.login());
-
-        const tasks = [
-          { name: 'Claim Faucet', fn: () => bot.claimFaucet() },
-          
-          { name: 'Claim Pending Bridge', fn: () => bot.claimValidatedOnSepolia({ waitMs: 0 }) },
-          { name: 'Claim Pulses', fn: () => bot.claimPulses() },
-          { name: 'Chat with Agent', fn: () => bot.chatWithAgent() },
-          { name: 'Claim Tasks', fn: () => bot.claimTasks() },
-        ];
-
-        if (parseFloat(swapAmountZtusd) > 0 && ztUSDToken && mollyToken) {
-          tasks.push({
-            name: `Swap ${swapAmountZtusd} ZTUSD → MOLLY`,
-            fn: async () => {
-              
-              await bot.performSwap(ztUSDToken, mollyToken, swapAmountZtusd);
-
-              logger.loading('Waiting 5 seconds before reverse swap...');
-              await delay(5000);
-
-              const mollyCtr = new ethers.Contract(mollyToken.address, ABIS.ERC20, bot.neuraWallet);
-              const balMolly = await mollyCtr.balanceOf(bot.address);
-              if (balMolly > 0n) {
-                const mollyAmountStr = ethers.formatUnits(balMolly, mollyToken.decimals);
-                await bot.performSwap(mollyToken, ztUSDToken, mollyAmountStr);
-              } else {
-                logger.warn('No MOLLY balance detected for reverse swap.');
-              }
-            }
-          });
-        }
-
-        if (parseFloat(bridgeSepoliaToNeuraAmount) > 0) {
-          tasks.push({ name: `Bridge Sepolia to Neura`, fn: () => bot.bridgeSepoliaToNeura(bridgeSepoliaToNeuraAmount) });
-        }
-        if (parseFloat(bridgeNeuraToSepoliaAmount) > 0) {
-          tasks.push({
-            name: `Bridge Neura to Sepolia`,
-            fn: async () => {
-              await bot.waitForNeuraBalance(bridgeNeuraToSepoliaAmount);
-              await bot.bridgeNeuraToSepolia(bridgeNeuraToSepoliaAmount);
-            }
-          });
-        }
-
-        for (const task of tasks) {
-          await runTaskWithRetries(task.fn, task.name);
-          logger.loading('Cooling down 5 seconds ...'); // Reduced from 20 to 5 for general consistency, but can be adjusted
-          await delay(5000);
-        }
-
-        await bot.checkBalances();
-
-      } catch (e) {
-        logger.critical(`A critical error occurred for wallet ${bot.address}. Moving to next wallet. Error: ${e.message}`);
-      }
-    }
-    return;
+  const tokens = await fetchAvailableTokens();
+  const ztUSDToken = tokens.find(t => t.symbol.toUpperCase() === 'ZTUSD');
+  const mollyToken = tokens.find(t => t.symbol.toUpperCase() === 'MOLLY');
+  
+  if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && (!ztUSDToken || !mollyToken)) {
+    logger.warn('Could not find ZTUSD or MOLLY in token list. Swap step will be skipped.');
   }
 
+  const wallets = Object.keys(process.env)
+    .filter(k => k.startsWith('PRIVATE_KEY_'))
+    .map(k => process.env[k])
+    .filter(Boolean);
   
-  if (choice === '2') {
-    for (const pk of pks) {
-        const bot = new NeuraBot(pk);
-        logger.section(`Wallet ${bot.address.slice(0,10)}...`); // Use new section logger
-        try {
-            await bot.executeWithRetry(() => bot.login());
-            await runTaskWithRetries(() => bot.claimFaucet(), 'Claim Faucet');
-        } catch(e) {
-            logger.error(`Faucet claim flow failed for wallet ${bot.address}: ${e.message}`);
-        }
-    }
-    return;
-  }
+  for (let idx = 0; idx < wallets.length; idx++) {
+    const proxy = (proxies || []).length
+      ? proxies[Math.floor(Math.random() * proxies.length)]
+      : undefined;
 
-  if (choice === '3') {
-    const tokens = await fetchAvailableTokens();
-    if (!tokens.length) return;
+    const pk = wallets[idx];
+    const bot = new NeuraBot(pk, proxy);
+    logger.section(`Wallet ${bot.address.slice(0,10)}... (proxy ${proxy ? 'ON' : 'OFF'})`);
 
-    console.log('\nAvailable tokens:');
-    tokens.forEach((t, i) => console.log(`${i + 1}. ${t.symbol}`));
+    try {
+      await bot.executeWithRetry(() => bot.login());
+      await bot.checkBalances();
+      
+      const tasks = [];
 
-    const fromIndexStr = await ask(rl, '\nEnter number for the token to swap FROM: ');
-    const toIndexStr = await ask(rl, 'Enter number for the token to swap TO: ');
-    const fromIndex = parseInt(fromIndexStr, 10) - 1;
-    const toIndex = parseInt(toIndexStr, 10) - 1;
+      // 1. Faucet
+      tasks.push({ name: 'Claim Faucet', fn: () => bot.claimFaucet() });
+      tasks.push({ name: 'Check Balances After Faucet', fn: () => bot.checkBalances() });
 
-    if (isNaN(fromIndex) || isNaN(toIndex) || !tokens[fromIndex] || !tokens[toIndex] || fromIndex === toIndex) {
-        logger.error('Invalid token selection.'); return;
-    }
-    
-    const tokenA = tokens[fromIndex];
-    const tokenB = tokens[toIndex];
+      // 2. Claim Pending Bridge (Sepolia -> Neura)
+      tasks.push({ name: 'Claim Pending Bridge (Sepolia→Neura)', fn: () => bot.claimValidatedOnSepolia({ waitMs: 0 }) });
+      
+      // 3. Swap (ZTUSD <-> MOLLY)
+      if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && ztUSDToken && mollyToken) {
+        for(let j = 0; j < swapRepeats; j++) {
+            tasks.push({
+                name: `[Swap Cycle ${j+1}/${swapRepeats}] ZTUSD → MOLLY`,
+                fn: async () => {
+                  
+                  await bot.performSwap(ztUSDToken, mollyToken, swapAmountZtusd);
 
-    const amountAStr = await ask(rl, `Enter amount of ${tokenA.symbol} to swap: `);
-    const repeatStr = await ask(rl, 'How many times to swap back and forth? (e.g., 1) ');
-    const repeats = parseInt(repeatStr, 10) || 1;
+                  logger.loading('Waiting 5 seconds before reverse swap...');
+                  await delay(5000);
 
-    for (const pk of pks) {
-        const bot = new NeuraBot(pk);
-        logger.section(`Wallet ${bot.address.slice(0,10)}...`); // Use new section logger
-        try {
-            await bot.executeWithRetry(() => bot.login());
-            for (let j = 0; j < repeats; j++) {
-                logger.step(`Swap Cycle ${j+1}/${repeats}`); // Used step for cycle
-                
-                await bot.performSwap(tokenA, tokenB, amountAStr);
-                
-                logger.loading('Waiting 5s before swapping back...');
-                await delay(5000);
-                
-                let amountBStrToSwap;
-                if (tokenB.symbol === 'ANKR') {
-                    const balanceWei = await bot.neuraProvider.getBalance(bot.address);
-                    const gasReserve = ethers.parseEther('0.1'); 
-                    if (balanceWei > gasReserve) amountBStrToSwap = ethers.formatEther(balanceWei - gasReserve);
-                } else {
-                    const tokenBContract = new ethers.Contract(tokenB.address, ABIS.ERC20, bot.neuraWallet);
-                    const tokenBBalance = await tokenBContract.balanceOf(bot.address);
-                    if (tokenBBalance > 0n) amountBStrToSwap = ethers.formatUnits(tokenBBalance, tokenB.decimals);
+                  const mollyCtr = new ethers.Contract(mollyToken.address, ABIS.ERC20, bot.neuraWallet);
+                  const balMolly = await mollyCtr.balanceOf(bot.address);
+                  if (balMolly > 0n) {
+                    const mollyAmountStr = ethers.formatUnits(balMolly, mollyToken.decimals);
+                    await bot.performSwap(mollyToken, ztUSDToken, mollyAmountStr);
+                  } else {
+                    logger.warn('No MOLLY balance detected for reverse swap.');
+                  }
                 }
-
-                if (amountBStrToSwap) await bot.performSwap(tokenB, tokenA, amountBStrToSwap);
-                else logger.warn(`No ${tokenB.symbol} balance to swap back. Skipping reverse swap.`);
-
-                logger.loading('Waiting 5s before next cycle...');
-                await delay(5000);
-            }
-        } catch (e) { logger.error(`Swap flow failed for wallet ${bot.address}: ${e.message}`); }
-    }
-    return;
-  }
-
-  if (choice === '4' || choice === '5') {
-    let bridgeSepoliaToNeuraAmount = '0';
-    let bridgeNeuraToSepoliaAmount = '0';
-    if (choice === '4') {
-        bridgeSepoliaToNeuraAmount = await ask(rl, 'Amount to bridge Sepolia→Neura (enter 0 to skip): ');
-        bridgeNeuraToSepoliaAmount = await ask(rl, 'Amount to bridge Neura→Sepolia (enter 0 to skip): ');
-    }
-
-    for (const pk of pks) {
-        const bot = new NeuraBot(pk);
-        logger.section(`Wallet ${bot.address.slice(0,10)}...`); // Use new section logger
-        try {
-          await bot.executeWithRetry(() => bot.login());
-          
-          if(choice === '5') {
-            await runTaskWithRetries(() => bot.claimPulses(), "Claim Pulses");
-            await runTaskWithRetries(() => bot.claimTasks(), "Claim Tasks");
-          }
-          
-          if (choice === '4') {
-            if (parseFloat(bridgeSepoliaToNeuraAmount) > 0) await runTaskWithRetries(() => bot.bridgeSepoliaToNeura(bridgeSepoliaToNeuraAmount), "Bridge Sepolia to Neura");
-            if (parseFloat(bridgeNeuraToSepoliaAmount) > 0) {
-                await runTaskWithRetries(async () => {
-                    await bot.waitForNeuraBalance(bridgeNeuraToSepoliaAmount);
-                    await bot.bridgeNeuraToSepolia(bridgeNeuraToSepoliaAmount);
-                }, "Bridge Neura to Sepolia");
-            }
-          }
-          await bot.checkBalances();
-        } catch (e) { logger.error(`Bot run failed for wallet ${bot.address}: ${e.message}`); }
+            });
+        }
+      } else if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0) {
+           logger.warn('Skipping Swap: Tokens ZTUSD or MOLLY not found.');
       }
-      return;
+      
+      // 4. Bridge (Sepolia -> Neura)
+      if (parseFloat(bridgeSepoliaToNeuraAmount) > 0) {
+        tasks.push({ name: `Bridge Sepolia to Neura (${bridgeSepoliaToNeuraAmount} tANKR)`, fn: () => bot.bridgeSepoliaToNeura(bridgeSepoliaToNeuraAmount) });
+      }
+
+      // 5. Bridge (Neura -> Sepolia)
+      if (parseFloat(bridgeNeuraToSepoliaAmount) > 0) {
+        tasks.push({
+          name: `Bridge Neura to Sepolia (${bridgeNeuraToSepoliaAmount} ANKR)`,
+          fn: async () => {
+            await bot.waitForNeuraBalance(bridgeNeuraToSepoliaAmount);
+            await bot.bridgeNeuraToSepolia(bridgeNeuraToSepoliaAmount);
+          }
+        });
+      }
+
+      // 6. Claim Tasks & Pulses
+      tasks.push({ name: 'Claim Pulses', fn: () => bot.claimPulses() });
+      tasks.push({ name: 'Chat with Agent', fn: () => bot.chatWithAgent() });
+      tasks.push({ name: 'Claim Tasks', fn: () => bot.claimTasks() });
+      
+      // 7. Final Balance Check
+      tasks.push({ name: 'Final Balance Check', fn: () => bot.checkBalances() });
+
+      logger.info(`Starting automatic sequence of ${tasks.length} tasks...`);
+      for (const task of tasks) {
+        await runTaskWithRetries(task.fn, task.name);
+        logger.loading('Cooling down 5 seconds before next step...');
+        await delay(5000);
+      }
+
+    } catch (e) {
+      logger.critical(`A critical error occurred for wallet ${bot.address}. Moving to next wallet. Error: ${e.message}`);
+    }
   }
+  return;
 }
 
 async function main() {
@@ -932,15 +749,11 @@ async function main() {
     logger.banner();
     proxies.length ? logger.info(`Loaded ${proxies.length} proxies.\n`) : logger.warn('No proxies loaded. Running in direct mode.\n');
     const choice = await ask(rl, `Choose an option:
-1. Create new wallets
-2. Load existing wallets from .env
-3. Exit
+1. use wallet from .env
 
 Enter number: `);
-    if (choice === '1') { await createNewWalletFlow(proxies, rl);
-    } else if (choice === '2') { await loadExistingWalletsFlow(proxies, rl);
-    } else if (choice === '3') { break;
-    } else { logger.error('Invalid choice.'); }
+    if (choice === '1') { await loadExistingWalletsFlow(proxies, rl);
+    } else { logger.error('Invalid choice. Exiting.'); break; } // Exit jika input tidak valid
     await ask(rl, '\nPress Enter to return to the main menu...');
   }
   rl.close();
