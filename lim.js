@@ -10,8 +10,8 @@ dotenv.config();
 
 const colors = {
   reset: '\x1b[0m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m',
-  red: '\x1b[31m', white: '\x1b[37m', bold: '\x1b[1m', magenta: '\x1b[35m',
-  blue: '\x1b[34m', gray: '\x1b[90m',
+  red: '\x1b[31m', white: '\x1b[37m', bold: '\x1b[1m',
+  magenta: '\x1b[35m', blue: '\x1b[34m', gray: '\x1b[90m', // Added new colors
 };
 
 const logger = {
@@ -25,7 +25,7 @@ const logger = {
     summary: (msg) => console.log(`${colors.green}${colors.bold}[SUMMARY] ${msg}${colors.reset}`),
     banner: () => {
         const border = `${colors.blue}${colors.bold}╔═════════════════════════════════════════╗${colors.reset}`;
-        const title = `${colors.blue}${colors.bold}║   🍉 19Seniman From Insider   🍉    ║${colors.reset}`;
+        const title = `${colors.blue}${colors.bold}║   🍉 19Seniman From Insider    🍉   ║${colors.reset}`;
         const bottomBorder = `${colors.blue}${colors.bold}╚═════════════════════════════════════════╝${colors.reset}`;
         
         console.log(`\n${border}`);
@@ -40,6 +40,7 @@ const logger = {
     },
     countdown: (msg) => process.stdout.write(`\r${colors.blue}[⏰] ${msg}${colors.reset}`),
 };
+// --- END NEW LOGGER ---
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const ask = (rl, q) => new Promise((res) => rl.question(q, res));
@@ -119,6 +120,7 @@ async function runTaskWithRetries(taskFn, taskName, maxRetries = 3) {
             if (i === maxRetries - 1) {
                 logger.error(`Task "${taskName}" failed after ${maxRetries} attempts. Moving to the next task.`);
             } else {
+                logger.loading('Waiting 5 seconds before next retry...');
                 await delay(5000);
             }
         }
@@ -293,7 +295,7 @@ class NeuraBot {
     }
   }
 
-      async claimFaucet() {
+  async claimFaucet() {
     logger.step(`Claiming from Faucet for ${this.address} (authenticated)...`);
     try {
       if (!this.cookies || !/privy-token=/.test(this.cookies) || !/privy-session=/.test(this.cookies) || !/privy-id-token=/.test(this.cookies)) {
@@ -394,7 +396,7 @@ class NeuraBot {
       const status = e?.response?.status;
       const payload = e?.response?.data ? JSON.stringify(e.response.data) : e.message;
       logger.error(`Faucet claim failed: ${payload}`);
-      if (status) logger.error(`[x] Received Status Code: ${status}`);
+      if (status) logger.error(`[x] Received Status Code: ${status}`); // Used [x] for error consistency
       throw e;
     }
   }
@@ -470,6 +472,7 @@ class NeuraBot {
       const bal = await this.neuraProvider.getBalance(this.address);
       logger.info(`Attempt ${i+1}/${maxAttempts}: Current Neura balance is ${ethers.formatEther(bal)} ANKR.`);
       if (bal >= minWei) { logger.success('Neura balance is sufficient!'); return true; }
+      logger.countdown(`Checking in ${Math.round(stepMs / 1000)}s...`); // Use new countdown
       await delay(stepMs);
     }
     throw new Error(`Timeout: Neura ANKR balance < ${minEth}`);
@@ -515,9 +518,12 @@ class NeuraBot {
     }
   }
 
-    async claimValidatedOnSepolia({ waitMs = 60_000, page = 1, limit = 20 } = {}) {
+  async claimValidatedOnSepolia({ waitMs = 60_000, page = 1, limit = 20 } = {}) {
     logger.step(`Auto-claim Pending Bridge Tx ...`);
-    await delay(waitMs);
+    if (waitMs > 0) {
+      logger.loading(`Waiting ${Math.round(waitMs / 1000)} seconds for validation...`);
+      await delay(waitMs);
+    }
 
     try {
       const url = API_ENDPOINTS.claimList(this.address.toLowerCase(), page, limit);
@@ -642,7 +648,7 @@ async function createNewWalletFlow(proxies, rl) {
   }
 
   for (let i = 0; i < n; i++) {
-    logger.step(`--- Creating and Processing Wallet ${i+1}/${n} ---`);
+    logger.section(`Wallet ${i+1}/${n}`); // Use new section logger
     const wallet = ethers.Wallet.createRandom();
     const addr = wallet.address;
     const pk = wallet.privateKey;
@@ -677,6 +683,7 @@ async function createNewWalletFlow(proxies, rl) {
         const bal = await tANKR.balanceOf(addr);
         logger.info(`Check ${k}/${maxAttempts}: tANKR = ${ethers.formatEther(bal)}`);
         if (bal >= targetTankr) { ok = true; break; }
+        logger.countdown(`Checking in 10s (attempt ${k+1}/${maxAttempts})...`); // Use new countdown
         await delay(10_000);
       }
       if (!ok) logger.warn('tANKR from faucet not reached 3 yet; will still proceed with available balance.');
@@ -738,13 +745,13 @@ Enter number: `);
     logger.info(`Found ${wallets.length} wallets in .env file.`);
 
     for (let idx = 0; idx < wallets.length; idx++) {
-      const proxy = (global?.proxies || []).length
-        ? global.proxies[Math.floor(Math.random() * global.proxies.length)]
+      const proxy = (proxies || []).length // Corrected from global?.proxies
+        ? proxies[Math.floor(Math.random() * proxies.length)]
         : undefined;
 
       const pk = wallets[idx];
       const bot = new NeuraBot(pk, proxy);
-      logger.step(`--- Processing Wallet ${bot.address.slice(0,10)}... (proxy ${proxy ? 'ON' : 'OFF'}) ---`);
+      logger.section(`Wallet ${bot.address.slice(0,10)}... (proxy ${proxy ? 'ON' : 'OFF'})`); // Use new section logger
 
       try {
         await bot.executeWithRetry(() => bot.login());
@@ -765,7 +772,7 @@ Enter number: `);
               
               await bot.performSwap(ztUSDToken, mollyToken, swapAmountZtusd);
 
-              logger.loading('Waiting 20 seconds before reverse swap...');
+              logger.loading('Waiting 5 seconds before reverse swap...');
               await delay(5000);
 
               const mollyCtr = new ethers.Contract(mollyToken.address, ABIS.ERC20, bot.neuraWallet);
@@ -795,14 +802,14 @@ Enter number: `);
 
         for (const task of tasks) {
           await runTaskWithRetries(task.fn, task.name);
-          logger.loading('Cooling down 20 seconds ...');
+          logger.loading('Cooling down 5 seconds ...'); // Reduced from 20 to 5 for general consistency, but can be adjusted
           await delay(5000);
         }
 
         await bot.checkBalances();
 
       } catch (e) {
-        logger.error(`A critical error occurred for wallet ${bot.address}. Moving to next wallet. Error: ${e.message}`);
+        logger.critical(`A critical error occurred for wallet ${bot.address}. Moving to next wallet. Error: ${e.message}`);
       }
     }
     return;
@@ -812,7 +819,7 @@ Enter number: `);
   if (choice === '2') {
     for (const pk of pks) {
         const bot = new NeuraBot(pk);
-        logger.step(`--- Processing Wallet ${bot.address.slice(0,10)}... ---`);
+        logger.section(`Wallet ${bot.address.slice(0,10)}...`); // Use new section logger
         try {
             await bot.executeWithRetry(() => bot.login());
             await runTaskWithRetries(() => bot.claimFaucet(), 'Claim Faucet');
@@ -848,11 +855,11 @@ Enter number: `);
 
     for (const pk of pks) {
         const bot = new NeuraBot(pk);
-        logger.step(`--- Processing Wallet ${bot.address.slice(0,10)}... ---`);
+        logger.section(`Wallet ${bot.address.slice(0,10)}...`); // Use new section logger
         try {
             await bot.executeWithRetry(() => bot.login());
             for (let j = 0; j < repeats; j++) {
-                logger.step(`--- Swap Cycle ${j+1}/${repeats} ---`);
+                logger.step(`Swap Cycle ${j+1}/${repeats}`); // Used step for cycle
                 
                 await bot.performSwap(tokenA, tokenB, amountAStr);
                 
@@ -891,7 +898,7 @@ Enter number: `);
 
     for (const pk of pks) {
         const bot = new NeuraBot(pk);
-        logger.step(`--- Processing Wallet ${bot.address.slice(0,10)}... ---`);
+        logger.section(`Wallet ${bot.address.slice(0,10)}...`); // Use new section logger
         try {
           await bot.executeWithRetry(() => bot.login());
           
@@ -918,9 +925,11 @@ Enter number: `);
 
 async function main() {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  // Pass proxies to the global context inside main scope if needed by other functions, but better to pass it as argument.
   const proxies = fs.existsSync('proxies.txt') ? fs.readFileSync('proxies.txt','utf-8').split('\n').filter(Boolean) : [];
+  
   while (true) {
-    logger.banner(); // Menggunakan banner baru
+    logger.banner();
     proxies.length ? logger.info(`Loaded ${proxies.length} proxies.\n`) : logger.warn('No proxies loaded. Running in direct mode.\n');
     const choice = await ask(rl, `Choose an option:
 1. Create new wallets
@@ -935,11 +944,10 @@ Enter number: `);
     await ask(rl, '\nPress Enter to return to the main menu...');
   }
   rl.close();
-  logger.success('Bot exited.');
+  logger.summary('Bot exited.'); // Use new summary logger
 }
 
 main().catch((err) => {
-  logger.critical(`A critical error occurred: ${err.message}`); // Menggunakan critical
+  logger.critical(`A critical error occurred: ${err.message}`); // Use new critical logger
   process.exit(1);
 });
-```
