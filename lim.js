@@ -11,7 +11,7 @@ dotenv.config();
 const colors = {
   reset: '\x1b[0m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m',
   red: '\x1b[31m', white: '\x1b[37m', bold: '\x1b[1m',
-  magenta: '\x1b[35m', blue: '\x1b[34m', gray: '\x1b[90m', 
+  magenta: '\x1b[35m', blue: '\x1b[34m', gray: '\x1b[90m', // Added new colors
 };
 
 const logger = {
@@ -668,14 +668,29 @@ async function loadExistingWalletsFlow(proxies, rl) {
       
       const tasks = [];
 
-      // 1. Faucet
+      // 1. Faucet (Sepolia)
       tasks.push({ name: 'Claim Faucet', fn: () => bot.claimFaucet() });
       tasks.push({ name: 'Check Balances After Faucet', fn: () => bot.checkBalances() });
 
       // 2. Claim Pending Bridge (Sepolia -> Neura)
       tasks.push({ name: 'Claim Pending Bridge (Sepolia→Neura)', fn: () => bot.claimValidatedOnSepolia({ waitMs: 0 }) });
       
-      // 3. Swap (ZTUSD <-> MOLLY)
+      // 3. Bridge (Sepolia -> Neura) - MOVED UP UNTUK MENDAPATKAN ANKR GAS SEBELUM SWAP
+      if (parseFloat(bridgeSepoliaToNeuraAmount) > 0) {
+        tasks.push({ 
+          name: `Bridge Sepolia to Neura (${bridgeSepoliaToNeuraAmount} tANKR)`, 
+          fn: async () => {
+            await bot.bridgeSepoliaToNeura(bridgeSepoliaToNeuraAmount);
+            logger.loading('Waiting 30 seconds for funds to arrive on Neura for gas...');
+            await delay(30000); // Tunda untuk memastikan dana tiba
+          }
+        });
+        tasks.push({ name: 'Check Balances After Bridge', fn: () => bot.checkBalances() });
+      } else {
+        logger.warn('Skipping Sepolia → Neura Bridge: Amount is 0 or invalid. Ensure you have ANKR gas on Neura for the swap.');
+      }
+
+      // 4. Swap (ZTUSD <-> MOLLY) - SEKARANG ADA GAS
       if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && ztUSDToken && mollyToken) {
         for(let j = 0; j < swapRepeats; j++) {
             tasks.push({
@@ -693,7 +708,7 @@ async function loadExistingWalletsFlow(proxies, rl) {
                     const mollyAmountStr = ethers.formatUnits(balMolly, mollyToken.decimals);
                     await bot.performSwap(mollyToken, ztUSDToken, mollyAmountStr);
                   } else {
-                    logger.warn('No MOLLY balance detected for reverse swap.');
+                    logger.warn('No MOLLY balance detected for reverse swap. Skipping.');
                   }
                 }
             });
@@ -702,11 +717,6 @@ async function loadExistingWalletsFlow(proxies, rl) {
            logger.warn('Skipping Swap: Tokens ZTUSD or MOLLY not found.');
       }
       
-      // 4. Bridge (Sepolia -> Neura)
-      if (parseFloat(bridgeSepoliaToNeuraAmount) > 0) {
-        tasks.push({ name: `Bridge Sepolia to Neura (${bridgeSepoliaToNeuraAmount} tANKR)`, fn: () => bot.bridgeSepoliaToNeura(bridgeSepoliaToNeuraAmount) });
-      }
-
       // 5. Bridge (Neura -> Sepolia)
       if (parseFloat(bridgeNeuraToSepoliaAmount) > 0) {
         tasks.push({
