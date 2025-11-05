@@ -73,50 +73,40 @@ function extractPrivyCookies(setCookieHeaders = []) {
   return out;
 }
 
+// --- FUNGSI DIGANTI TOTAL UNTUK MENGHINDARI ERROR 404 API ---
 async function fetchAvailableTokens() {
-    logger.info('Fetching available swap tokens...');
-    try {
-        // --- PERBAIKAN ENDPOINT UNTUK MENGHINDARI 404 ---
-        // Menggunakan endpoint yang lebih stabil dari infrastruktur Neura Protocol
-        const endpoint = "https://http-testnet-graph-eth.infra.neuraprotocol.io/subgraphs/name/test-eth"; 
-        
-        const query = `query AllTokens { tokens { id symbol name decimals } }`;
-        const body = { operationName: "AllTokens", variables: {}, query: query };
-        
-        const response = await axios.post(endpoint, body, {
-             headers: {
-              'accept': 'application/graphql-response+json, application/json',
-              'content-type': 'application/json'
-            }
-        });
-        
-        const tokens = response.data.data.tokens;
-        
-        const uniqueTokens = new Map();
-        for (const token of tokens) {
-            if (!token.symbol || token.symbol.includes(' ')) continue;
-            const symbol = token.symbol.toUpperCase();
-            if (!uniqueTokens.has(symbol)) {
-                uniqueTokens.set(symbol, {
-                    address: token.id,
-                    symbol: symbol,
-                    decimals: parseInt(token.decimals, 10),
-                });
-            }
-        }
-        
-        if (uniqueTokens.has('WANKR')) {
-             uniqueTokens.set('ANKR', { ...uniqueTokens.get('WANKR'), symbol: 'ANKR' });
-        }
-       
-        logger.success(`Found ${uniqueTokens.size} unique swappable tokens.`);
-        return Array.from(uniqueTokens.values()).sort((a,b) => a.symbol.localeCompare(b.symbol));
-    } catch (e) {
-        logger.error(`Failed to fetch tokens: ${e.message}`);
-        // Untuk Error 404 di sini, kita mengembalikan array kosong, yang akan ditangani di main()
-        return [];
-    }
+    logger.info('Using hardcoded list of available swap tokens to bypass 404 error...');
+    
+    // Daftar token yang di-hardcode berdasarkan CONTRACTS yang sudah ada
+    const hardcodedTokens = [
+        // Menggunakan WANKR sebagai representasi ANKR native di router
+        { 
+            address: CONTRACTS.NEURA.WANKR, 
+            symbol: 'ANKR', 
+            decimals: 18,
+            name: 'Neura ANKR (WANKR)',
+        },
+        // ZTUSD
+        { 
+            address: CONTRACTS.NEURA.ZTUSD, 
+            symbol: 'ZTUSD', 
+            decimals: 18, 
+            name: 'ZTUSD Token',
+        },
+        // MOLLY - ALAMAT MOLLY YANG SUDAH VALID
+        { 
+            address: CONTRACTS.NEURA.MOLLY, // Menggunakan alamat MOLLY yang baru
+            symbol: 'MOLLY', 
+            decimals: 18, 
+            name: 'MOLLY Token',
+        },
+    ];
+    
+    logger.success(`Successfully loaded ${hardcodedTokens.length} tokens.`);
+    return hardcodedTokens;
 }
+// ------------------------------------------------------------------
+
 
 async function runTaskWithRetries(taskFn, taskName, maxRetries = 3) {
     logger.step(`Starting task: ${taskName}`);
@@ -163,6 +153,7 @@ const CONTRACTS = {
     SWAP_ROUTER: '0x5AeFBA317BAba46EAF98Fd6f381d07673bcA6467',
     WANKR: '0xbd833b6ecc30caeabf81db18bb0f1e00c6997e7a', 
     ZTUSD: '0x9423c6c914857e6daaace3b585f4640231505128', 
+    MOLLY: '0x4af5da246a9241a7ff5c33bfa3987ed9fec3f45a', // ALAMAT MOLLY BARU
     BRIDGE: '0xc6255a594299F1776de376d0509aB5ab875A6E3E', 
   },
   SEPOLIA: {
@@ -798,7 +789,7 @@ async function main() {
   logger.banner();
   proxies.length ? logger.info(`Loaded ${proxies.length} proxies.\n`) : logger.warn('No proxies loaded. Running in direct mode.\n');
   
-  // --- PENGATURAN PARAMETER AWAL ---
+  // --- PENGATURAN PARAMETER OTOMATIS ---
   logger.section('PENGATURAN PARAMETER OTOMATIS');
   const bridgeSepoliaToNeuraAmount = await ask(rl, 'Amount to bridge Sepolia→Neura (enter 0 to skip): ');
   const bridgeNeuraToSepoliaAmount = await ask(rl, 'Amount to bridge Neura→Sepolia (enter 0 to skip): ');
@@ -806,11 +797,13 @@ async function main() {
   const swapRepeatStr = await ask(rl, 'How many times to perform ZTUSD ↔ MOLLY swap? (e.g., 1): ');
   const swapRepeats = parseInt(swapRepeatStr, 10) || 0;
   
+  // TIDAK LAGI MENGGANTUNGKAN PADA API, LANGSUNG DARI HARDCODE
   const tokens = await fetchAvailableTokens();
   const ztUSDToken = tokens.find(t => t.symbol.toUpperCase() === 'ZTUSD');
   const mollyToken = tokens.find(t => t.symbol.toUpperCase() === 'MOLLY');
   
   if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && (!ztUSDToken || !mollyToken)) {
+    // Dengan alamat MOLLY yang sudah benar, ini seharusnya tidak terjadi
     logger.error('Could not find ZTUSD or MOLLY in token list. Please fix the token list or set swap amount to 0.');
     rl.close();
     return;
