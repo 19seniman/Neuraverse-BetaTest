@@ -75,7 +75,7 @@ function extractPrivyCookies(setCookieHeaders = []) {
 
 // --- FUNGSI DIGANTI TOTAL UNTUK MENGHINDARI ERROR 404 API ---
 async function fetchAvailableTokens() {
-    logger.info('Using hardcoded list of available swap tokens to bypass 404 error...');
+    logger.info('Using hardcoded list of available swap tokens to bypass 404/API error...');
     
     // Daftar token yang di-hardcode berdasarkan CONTRACTS yang sudah ada
     const hardcodedTokens = [
@@ -106,7 +106,6 @@ async function fetchAvailableTokens() {
     return hardcodedTokens;
 }
 // ------------------------------------------------------------------
-
 
 async function runTaskWithRetries(taskFn, taskName, maxRetries = 3) {
     logger.step(`Starting task: ${taskName}`);
@@ -252,7 +251,7 @@ class NeuraBot {
     }
   }
   // --- AKHIR PERBAIKAN ERROR HANDLING ---
-
+  
   async login() {
     logger.step(`Logging in for wallet: ${this.address}`);
     try {
@@ -272,6 +271,11 @@ class NeuraBot {
       });
       const { nonce, issuedAt } = init.data || {};
       if (!nonce) throw new Error('Privy init: nonce missing');
+      
+      // --- PERBAIKAN 401: DELAY SEBELUM SIGNATURE ---
+      logger.loading('Waiting 5 seconds before signing to prevent nonce expiration...');
+      await delay(5000);
+      // --- AKHIR PERBAIKAN ---
 
       const siwe = new SiweMessage({
         domain: 'neuraverse.neuraprotocol.io',
@@ -315,7 +319,7 @@ class NeuraBot {
       logger.success('Successfully logged in.');
       
       // --- PERBAIKAN: JEDA SETELAH LOGIN UNTUK MENGHINDARI 429 ---
-      logger.loading('Waiting 15 seconds after successful login to prevent rate limit...');
+      logger.loading('Waiting 15 seconds after successful login to prevent rate limit on next call...');
       await delay(15000);
       // --- AKHIR PERBAIKAN ---
 
@@ -770,14 +774,12 @@ async function loadExistingWalletsFlow(
       logger.critical(`A critical error occurred for wallet ${bot.address}. Moving to next wallet. Error: ${e.message}`);
     }
     
-    // --- PERBAIKAN: JEDA ANTAR DOMPET UNTUK MENGHINDARI 429 ---
     if (idx < wallets.length - 1) {
         // Jeda acak 60 - 180 detik (1 - 3 menit)
         const sleepDuration = (Math.floor(Math.random() * (180 - 60 + 1)) + 60) * 1000; 
         logger.section(`[COOLDOWN] Waiting ${Math.round(sleepDuration / 1000)} seconds before starting next wallet.`);
         await countdownAndDelay(sleepDuration);
     }
-    // --- AKHIR PERBAIKAN JEDA ANTAR DOMPET ---
   }
   return;
 }
@@ -803,7 +805,6 @@ async function main() {
   const mollyToken = tokens.find(t => t.symbol.toUpperCase() === 'MOLLY');
   
   if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && (!ztUSDToken || !mollyToken)) {
-    // Dengan alamat MOLLY yang sudah benar, ini seharusnya tidak terjadi
     logger.error('Could not find ZTUSD or MOLLY in token list. Please fix the token list or set swap amount to 0.');
     rl.close();
     return;
