@@ -76,10 +76,21 @@ function extractPrivyCookies(setCookieHeaders = []) {
 async function fetchAvailableTokens() {
     logger.info('Fetching available swap tokens...');
     try {
-        const endpoint = "https://api.goldsky.com/api/public/project_cmc8t6vh6mqlg01w19r2g15a7/subgraphs/analytics/1.0.0/gn";
+        // --- PERBAIKAN ENDPOINT DI SINI UNTUK MENGHINDARI 404 ---
+        // Endpoint Goldsky lama: "https://api.goldsky.com/api/public/project_cmc8t6vh6mqlg01w19r2g15a7/subgraphs/analytics/1.0.0/gn";
+        // Menggunakan endpoint yang lebih stabil dari infrastruktur Neura Protocol
+        const endpoint = "https://http-testnet-graph-eth.infra.neuraprotocol.io/subgraphs/name/test-eth"; 
+        
         const query = `query AllTokens { tokens { id symbol name decimals } }`;
         const body = { operationName: "AllTokens", variables: {}, query: query };
-        const response = await axios.post(endpoint, body);
+        
+        const response = await axios.post(endpoint, body, {
+             headers: {
+              'accept': 'application/graphql-response+json, application/json',
+              'content-type': 'application/json'
+            }
+        });
+        
         const tokens = response.data.data.tokens;
         
         const uniqueTokens = new Map();
@@ -779,6 +790,7 @@ async function main() {
   const mollyToken = tokens.find(t => t.symbol.toUpperCase() === 'MOLLY');
   
   if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && (!ztUSDToken || !mollyToken)) {
+    // Pesan Error ini akan muncul jika API berhasil tapi token ZTUSD/MOLLY tidak ditemukan
     logger.error('Could not find ZTUSD or MOLLY in token list. Please fix the token list or set swap amount to 0.');
     rl.close();
     return;
