@@ -76,10 +76,20 @@ function extractPrivyCookies(setCookieHeaders = []) {
 async function fetchAvailableTokens() {
     logger.info('Fetching available swap tokens...');
     try {
-        const endpoint = "https://api.goldsky.com/api/public/project_cmc8t6vh6mqlg01w19r2g15a7/subgraphs/analytics/1.0.0/gn";
+        // --- PERBAIKAN ENDPOINT UNTUK MENGHINDARI 404 ---
+        // Menggunakan endpoint yang lebih stabil dari infrastruktur Neura Protocol
+        const endpoint = "https://http-testnet-graph-eth.infra.neuraprotocol.io/subgraphs/name/test-eth"; 
+        
         const query = `query AllTokens { tokens { id symbol name decimals } }`;
         const body = { operationName: "AllTokens", variables: {}, query: query };
-        const response = await axios.post(endpoint, body);
+        
+        const response = await axios.post(endpoint, body, {
+             headers: {
+              'accept': 'application/graphql-response+json, application/json',
+              'content-type': 'application/json'
+            }
+        });
+        
         const tokens = response.data.data.tokens;
         
         const uniqueTokens = new Map();
@@ -103,6 +113,7 @@ async function fetchAvailableTokens() {
         return Array.from(uniqueTokens.values()).sort((a,b) => a.symbol.localeCompare(b.symbol));
     } catch (e) {
         logger.error(`Failed to fetch tokens: ${e.message}`);
+        // Untuk Error 404 di sini, kita mengembalikan array kosong, yang akan ditangani di main()
         return [];
     }
 }
@@ -230,20 +241,27 @@ class NeuraBot {
     this.cookies = '';
   }
 
+  // --- PERBAIKAN ERROR HANDLING UNTUK MENAMPILKAN KODE STATUS HTTP ---
   async executeWithRetry(fn, maxRetries = 3) {
     for (let i = 0; i < maxRetries; i++) {
       try { return await fn(); }
       catch (e) {
-        const message = e.message || 'An unknown error occurred.';
+        let message = e.message || 'An unknown error occurred.';
+        if (e.response) {
+            message = `Request failed with status ${e.response.status}. Response: ${JSON.stringify(e.response.data)}`;
+        }
         logger.warn(`Attempt ${i + 1}/${maxRetries} failed: ${message}`);
         if (i === maxRetries - 1) {
-          throw e; 
+          const finalError = new Error(message);
+          finalError.originalError = e;
+          throw finalError; 
         }
         await delay(5000);
       }
     }
   }
-  
+  // --- AKHIR PERBAIKAN ERROR HANDLING ---
+
   async login() {
     logger.step(`Logging in for wallet: ${this.address}`);
     try {
@@ -304,6 +322,12 @@ class NeuraBot {
 
       this.api.defaults.headers.common['Authorization'] = `Bearer ${this.identityToken}`;
       logger.success('Successfully logged in.');
+      
+      // --- PERBAIKAN: JEDA SETELAH LOGIN UNTUK MENGHINDARI 429 ---
+      logger.loading('Waiting 15 seconds after successful login to prevent rate limit...');
+      await delay(15000);
+      // --- AKHIR PERBAIKAN ---
+
     } catch (e) {
       logger.error(`Login failed: ${e.response ? JSON.stringify(e.response.data) : e.message}`);
       throw e;
@@ -411,7 +435,7 @@ class NeuraBot {
       const status = e?.response?.status;
       const payload = e?.response?.data ? JSON.stringify(e.response.data) : e.message;
       logger.error(`Faucet claim failed: ${payload}`);
-      if (status) logger.error(`[x] Received Status Code: ${status}`); // Used [x] for error consistency
+      if (status) logger.error(`[x] Received Status Code: ${status}`); 
       throw e;
     }
   }
@@ -653,7 +677,6 @@ async function loadExistingWalletsFlow(
   if (!pks.length) { logger.error('No private keys found in .env file.'); return; }
   logger.info(`Found ${pks.length} wallets in .env file.`);
   
-  // Parameter check
   if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && (!ztUSDToken || !mollyToken)) {
     logger.warn('Could not find ZTUSD or MOLLY in token list. Swap step will be skipped for this cycle.');
   }
@@ -685,14 +708,14 @@ async function loadExistingWalletsFlow(
       // 2. Claim Pending Bridge (Sepolia -> Neura)
       tasks.push({ name: 'Claim Pending Bridge (Sepolia→Neura)', fn: () => bot.claimValidatedOnSepolia({ waitMs: 0 }) });
       
-      // 3. Bridge (Sepolia -> Neura) - MOVED UP UNTUK MENDAPATKAN ANKR GAS SEBELUM SWAP
+      // 3. Bridge (Sepolia -> Neura)
       if (parseFloat(bridgeSepoliaToNeuraAmount) > 0) {
         tasks.push({ 
           name: `Bridge Sepolia to Neura (${bridgeSepoliaToNeuraAmount} tANKR)`, 
           fn: async () => {
             await bot.bridgeSepoliaToNeura(bridgeSepoliaToNeuraAmount);
             logger.loading('Waiting 30 seconds for funds to arrive on Neura for gas...');
-            await delay(30000); // Tunda untuk memastikan dana tiba
+            await delay(30000); 
           }
         });
         tasks.push({ name: 'Check Balances After Bridge', fn: () => bot.checkBalances() });
@@ -755,6 +778,15 @@ async function loadExistingWalletsFlow(
     } catch (e) {
       logger.critical(`A critical error occurred for wallet ${bot.address}. Moving to next wallet. Error: ${e.message}`);
     }
+    
+    // --- PERBAIKAN: JEDA ANTAR DOMPET UNTUK MENGHINDARI 429 ---
+    if (idx < wallets.length - 1) {
+        // Jeda acak 60 - 180 detik (1 - 3 menit)
+        const sleepDuration = (Math.floor(Math.random() * (180 - 60 + 1)) + 60) * 1000; 
+        logger.section(`[COOLDOWN] Waiting ${Math.round(sleepDuration / 1000)} seconds before starting next wallet.`);
+        await countdownAndDelay(sleepDuration);
+    }
+    // --- AKHIR PERBAIKAN JEDA ANTAR DOMPET ---
   }
   return;
 }
@@ -766,12 +798,12 @@ async function main() {
   logger.banner();
   proxies.length ? logger.info(`Loaded ${proxies.length} proxies.\n`) : logger.warn('No proxies loaded. Running in direct mode.\n');
   
-  // --- PENGATURAN PARAMETER AWAL (DILAKUKAN SEKALI) ---
+  // --- PENGATURAN PARAMETER AWAL ---
   logger.section('PENGATURAN PARAMETER OTOMATIS');
   const bridgeSepoliaToNeuraAmount = await ask(rl, 'Amount to bridge Sepolia→Neura (enter 0 to skip): ');
   const bridgeNeuraToSepoliaAmount = await ask(rl, 'Amount to bridge Neura→Sepolia (enter 0 to skip): ');
   const swapAmountZtusd = await ask(rl, 'Amount of ZTUSD to swap to MOLLY (enter 0 to skip): ');
-  const swapRepeatStr = await ask(rl, 'How many times to perform ZTUSD ↔️ MOLLY swap? (e.g., 1): ');
+  const swapRepeatStr = await ask(rl, 'How many times to perform ZTUSD ↔ MOLLY swap? (e.g., 1): ');
   const swapRepeats = parseInt(swapRepeatStr, 10) || 0;
   
   const tokens = await fetchAvailableTokens();
@@ -784,7 +816,7 @@ async function main() {
     return;
   }
   
-  rl.close(); // Tutup RL karena input dari user sudah selesai
+  rl.close(); 
 
   // --- AUTOMATION LOOP 24 JAM ---
   const DELAY_DURATION = 24 * 60 * 60 * 1000; // 24 jam dalam ms
@@ -813,10 +845,9 @@ async function main() {
       logger.warn('Previous cycle took longer than 24 hours. Starting next cycle immediately.');
     }
   }
-  // Tidak perlu ada rl.close() di sini karena loop berjalan terus
 }
 
 main().catch((err) => {
-  logger.critical(`A critical error occurred: ${err.message}`); // Use new critical logger
+  logger.critical(`A critical error occurred: ${err.message}`); 
   process.exit(1);
 });
