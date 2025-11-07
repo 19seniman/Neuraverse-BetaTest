@@ -4,14 +4,20 @@ const fs = require('fs');
 const readline = require('readline');
 const dotenv = require('dotenv');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const { SiweMessage } = require('siwe');
 
 dotenv.config();
 
 const colors = {
-  reset: '\x1b[0m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m',
-  red: '\x1b[31m', white: '\x1b[37m', bold: '\x1b[1m',
-  magenta: '\x1b[35m', blue: '\x1b[34m', gray: '\x1b[90m', 
+    reset: '\x1b[0m',
+    cyan: '\x1b[36m',
+    green: '\x1b[32m',
+    yellow: '\x1b[33m',
+    red: '\x1b[31m',
+    white: '\x1b[37m',
+    bold: '\x1b[1m',
+    magenta: '\x1b[35m',
+    blue: '\x1b[34m',
+    gray: '\x1b[90m',
 };
 
 const logger = {
@@ -40,808 +46,440 @@ const logger = {
     },
     countdown: (msg) => process.stdout.write(`\r${colors.blue}[⏰] ${msg}${colors.reset}`),
 };
-
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-const ask = (rl, q) => new Promise((res) => rl.question(q, res));
-const getRandomAmount = (min, max) => (Math.random() * (max - min) + min).toFixed(5);
-const getUA = () => ([
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-])[Math.floor(Math.random() * 2)];
-
-function formatProxy(p) {
-  if (!p || !p.includes('://')) return p;
-  const [proto, rest] = p.split('://');
-  const atCount = (rest.match(/@/g) || []).length;
-  if (atCount !== 1) return p;
-  const [a, b] = rest.split('@');
-  if (b.includes(':')) return `${proto}://${b}@${a}`;
-  return p;
-}
-
-function extractPrivyCookies(setCookieHeaders = []) {
-  if (!Array.isArray(setCookieHeaders)) return {};
-  const wanted = ['privy-token', 'privy-session'];
-  const out = {};
-  for (const raw of setCookieHeaders) {
-    const [kv] = raw.split(';');
-    const [k, v] = kv.split('=');
-    const name = (k || '').trim();
-    const val = (v || '').trim();
-    if (wanted.includes(name)) out[name] = val;
-  }
-  return out;
-}
-
-// --- FUNGSI DIGANTI TOTAL UNTUK MENGHINDARI ERROR 404 API ---
-async function fetchAvailableTokens() {
-    logger.info('Using hardcoded list of available swap tokens to bypass 404/API error...');
-    
-    // Daftar token yang di-hardcode berdasarkan CONTRACTS yang sudah ada
-    const hardcodedTokens = [
-        // Menggunakan WANKR sebagai representasi ANKR native di router
-        { 
-            address: CONTRACTS.NEURA.WANKR, 
-            symbol: 'ANKR', 
-            decimals: 18,
-            name: 'Neura ANKR (WANKR)',
-        },
-        // ZTUSD
-        { 
-            address: CONTRACTS.NEURA.ZTUSD, 
-            symbol: 'ZTUSD', 
-            decimals: 18, 
-            name: 'ZTUSD Token',
-        },
-        // MOLLY - ALAMAT MOLLY YANG SUDAH VALID
-        { 
-            address: CONTRACTS.NEURA.MOLLY, // Menggunakan alamat MOLLY yang baru
-            symbol: 'MOLLY', 
-            decimals: 18, 
-            name: 'MOLLY Token',
-        },
-    ];
-    
-    logger.success(`Successfully loaded ${hardcodedTokens.length} tokens.`);
-    return hardcodedTokens;
-}
-// ------------------------------------------------------------------
-
-async function runTaskWithRetries(taskFn, taskName, maxRetries = 3) {
-    logger.step(`Starting task: ${taskName}`);
-    for (let i = 0; i < maxRetries; i++) {
-        try {
-            await taskFn();
-            logger.success(`Task "${taskName}" completed successfully.`);
-            return;
-        } catch (error) {
-            const message = error?.message || error?.shortMessage || 'An unknown error occurred.';
-            logger.warn(`Attempt ${i + 1}/${maxRetries} for task "${taskName}" failed: ${message}`);
-            if (i === maxRetries - 1) {
-                logger.error(`Task "${taskName}" failed after ${maxRetries} attempts. Moving to the next task.`);
-            } else {
-                logger.loading('Waiting 5 seconds before next retry...');
-                await delay(5000);
-            }
-        }
-    }
-}
-
-// Helper function untuk hitungan mundur 24 jam
-async function countdownAndDelay(ms) {
-    const duration = Math.round(ms / 1000); // seconds
-    for (let i = duration; i > 0; i--) {
-        const h = Math.floor(i / 3600);
-        const m = Math.floor((i % 3600) / 60);
-        const s = i % 60;
-        const timeString = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-        logger.countdown(`Next cycle starts in: ${timeString}`);
-        await delay(1000);
-    }
-    process.stdout.write('\n'); // New line after countdown
-}
+// --- END NEW LOGGER DEFINITION ---
 
 
-const NEURA_RPC = 'https://testnet.rpc.neuraprotocol.io/';
-const SEPOLIA_RPC = 'https://ethereum-sepolia-rpc.publicnode.com/';
-const NEURA_CHAIN_ID = 28802;
-const SEPOLIA_CHAIN_ID = 11155111;
+// --- CONFIGURATION ---
+const RPC_URL = process.env.RPC_URL || "https://rpc.dev-us-west1.pulsechain.com";
+const API_BASE_URL = process.env.API_BASE_URL || "https://api.dev-us-west1.pulsechain.com";
+const FAUCET_API_URL = `${API_BASE_URL}/faucet`;
+const SWAP_API_URL = `${API_BASE_URL}/swap`;
+const CLAIM_API_URL = `${API_BASE_URL}/tasks/claim`;
+const COLLECT_PULSES_API_URL = `${API_BASE_URL}/pulses/collect`;
+const CHAT_API_URL = `${API_BASE_URL}/chat`;
+const WALLET_FILE = 'wallets.json';
+const MAX_RETRIES = 3;
 
-const CONTRACTS = {
-  NEURA: {
-    SWAP_ROUTER: '0x5AeFBA317BAba46EAF98Fd6f381d07673bcA6467',
-    WANKR: '0xbd833b6ecc30caeabf81db18bb0f1e00c6997e7a', 
-    ZTUSD: '0x9423c6c914857e6daaace3b585f4640231505128', 
-    MOLLY: '0x4af5da246a9241a7ff5c33bfa3987ed9fec3f45a', // ALAMAT MOLLY BARU
-    BRIDGE: '0xc6255a594299F1776de376d0509aB5ab875A6E3E', 
-  },
-  SEPOLIA: {
-    BRIDGE: '0xc6255a594299F1776de376d0509aB5ab875A6E3E', 
-    TANKR: '0xB88Ca91Fef0874828e5ea830402e9089aaE0bB7F', 
-  },
-};
+// --- UTILITIES ---
 
-const ABIS = {
-  SWAP_ROUTER: ['function multicall(bytes[] data) payable returns (bytes[] results)'],
-  ERC20: [
-    'function approve(address spender, uint256 amount) external returns (bool)',
-    'function balanceOf(address account) external view returns (uint256)',
-    'function allowance(address owner, address spender) external view returns (uint256)',
-    'function decimals() external view returns (uint8)',
-    'function transfer(address to, uint256 amount) external returns (bool)',
-  ],
-  NEURA_BRIDGE: ['function deposit(address _recipient, uint256 _chainId) payable'],
-  SEPOLIA_BRIDGE: ['function deposit(uint256 assets, address receiver) external'],
-  BRIDGE_CLAIM: ['function claim(bytes encodedMessage, bytes[] messageSignatures) external'],
-};
+/**
+ * Delays execution for a given number of milliseconds.
+ * @param {number} ms - The number of milliseconds to wait.
+ */
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const API_ENDPOINTS = {
-  BASE: 'https://neuraverse-testnet.infra.neuraprotocol.io/api',
-  AUTH_BASE: 'https://privy.neuraverse.neuraprotocol.io/api/v1', 
-  get AUTH_INIT() { return `${this.AUTH_BASE}/siwe/init`; },
-  get AUTH_AUTHENTICATE() { return `${this.AUTH_BASE}/siwe/authenticate`; },
-  get EVENTS() { return `${this.BASE}/events`; },
-  get ACCOUNT() { return `${this.BASE}/account`; },
-  get FAUCET() { return `https://neuraverse.neuraprotocol.io/api/faucet`; },
-  get VALIDATORS() { return `${this.BASE}/game/validators/`; },
-  get CHAT() { return `${this.BASE}/game/chat/validator/`; },
-  get TASKS() { return `${this.BASE}/tasks`; },
-  taskClaim(taskId) { return `${this.TASKS}/${taskId}/claim`; },
-  claimList(recipient, page = 1, limit = 20) {
-    return `${this.BASE}/claim-tx?recipient=${recipient}&page=${page}&limit=${limit}`;
-  },
-};
-const PRIVY_APP_ID = 'cmbpempz2011ll10l7iucga14';
-
-const routerIface = new ethers.Interface(ABIS.SWAP_ROUTER);
-const abi = ethers.AbiCoder.defaultAbiCoder();
-function encodeInnerSwap({ tokenIn, tokenOut, recipient, deadlineMs, amountInWei }) {
-  const innerParams = abi.encode(
-    ['address','address','uint256','address','uint256','uint256','uint256','uint256'],
-    [
-      tokenIn, tokenOut, 0n, recipient, BigInt(deadlineMs),
-      BigInt(amountInWei), 27n, 0n,
-    ]
-  );
-  return '0x1679c792' + innerParams.slice(2);
-}
-function encodeRouterMulticall(calls) {
-  return routerIface.encodeFunctionData('multicall', [calls]);
-}
-
-class NeuraBot {
-  constructor(privateKey, proxy = null) {
-    this.neuraProvider = new ethers.JsonRpcProvider(NEURA_RPC);
-    this.sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_RPC);
-    this.wallet = new ethers.Wallet(privateKey);
-    this.neuraWallet = this.wallet.connect(this.neuraProvider);
-    this.sepoliaWallet = this.wallet.connect(this.sepoliaProvider);
-    this.address = this.wallet.address;
-
-    let agent = null;
-    if (proxy) {
-      try {
-        const fmt = formatProxy(proxy); new URL(fmt);
-        agent = new HttpsProxyAgent(fmt);
-        logger.info(`Using proxy for wallet ${this.address.slice(0, 10)}...`);
-      } catch { logger.warn(`Invalid proxy: ${proxy}. Running direct.`); }
-    }
-    this.api = axios.create({ httpsAgent: agent, httpAgent: agent });
-    this.api.defaults.headers.common['User-Agent'] = getUA();
-    this.cookies = '';
-  }
-
-  // --- PERBAIKAN ERROR HANDLING UNTUK MENAMPILKAN KODE STATUS HTTP ---
-  async executeWithRetry(fn, maxRetries = 3) {
-    for (let i = 0; i < maxRetries; i++) {
-      try { return await fn(); }
-      catch (e) {
-        let message = e.message || 'An unknown error occurred.';
-        if (e.response) {
-            message = `Request failed with status ${e.response.status}. Response: ${JSON.stringify(e.response.data)}`;
-        }
-        logger.warn(`Attempt ${i + 1}/${maxRetries} failed: ${message}`);
-        if (i === maxRetries - 1) {
-          const finalError = new Error(message);
-          finalError.originalError = e;
-          throw finalError; 
-        }
-        await delay(5000);
-      }
-    }
-  }
-  // --- AKHIR PERBAIKAN ERROR HANDLING ---
-  
-  async login() {
-    logger.step(`Logging in for wallet: ${this.address}`);
-    try {
-      const h = {
-        accept: 'application/json',
-        'privy-app-id': PRIVY_APP_ID,
-        'privy-ca-id': '1f9fffee-01be-4aba-9c7f-499a39e4c47b',
-        'privy-client': 'react-auth:2.25.0',
-        'Content-Type': 'application/json',
-        Referer: 'https://neuraverse.neuraprotocol.io/',
-        Origin: 'https://neuraverse.neuraprotocol.io',
-      };
-
-      const init = await this.api.post(API_ENDPOINTS.AUTH_INIT, { address: this.address }, {
-        headers: h,
-        withCredentials: true,
-      });
-      const { nonce, issuedAt } = init.data || {};
-      if (!nonce) throw new Error('Privy init: nonce missing');
-      
-      // --- PERBAIKAN 401: DELAY SEBELUM SIGNATURE ---
-      logger.loading('Waiting 5 seconds before signing to prevent nonce expiration...');
-      await delay(5000);
-      // --- AKHIR PERBAIKAN ---
-
-      const siwe = new SiweMessage({
-        domain: 'neuraverse.neuraprotocol.io',
-        address: this.address,
-        statement: 'By signing, you are proving you own this wallet and logging in. This does not initiate a transaction or cost any fees.',
-        uri: 'https://neuraverse.neuraprotocol.io',
-        version: '1',
-        chainId: NEURA_CHAIN_ID,
-        nonce,
-        issuedAt,
-        resources: ['https://privy.io'],
-      });
-      const msgToSign = siwe.prepareMessage();
-      const signature = await this.wallet.signMessage(msgToSign);
-
-      const auth = await this.api.post(
-        API_ENDPOINTS.AUTH_AUTHENTICATE,
-        {
-          message: msgToSign,
-          signature,
-          chainId: `eip155:${NEURA_CHAIN_ID}`,
-          walletClientType: 'metamask',
-          connectorType: 'injected',
-          mode: 'login-or-sign-up',
-        },
-        { headers: h, withCredentials: true, }
-      );
-
-      this.identityToken = auth.data?.identity_token;
-      if (!this.identityToken) throw new Error('Privy authenticate: identity_token missing');
-
-      const setCookie = [].concat(init.headers['set-cookie'] || []).concat(auth.headers['set-cookie'] || []);
-      const jar = extractPrivyCookies(setCookie);
-
-      this.cookies =
-        `privy-token=${jar['privy-token'] || ''}; ` +
-        `privy-session=${jar['privy-session'] || ''}; ` +
-        `privy-id-token=${this.identityToken}`;
-
-      this.api.defaults.headers.common['Authorization'] = `Bearer ${this.identityToken}`;
-      logger.success('Successfully logged in.');
-      
-      // --- PERBAIKAN: JEDA SETELAH LOGIN UNTUK MENGHINDARI 429 ---
-      logger.loading('Waiting 15 seconds after successful login to prevent rate limit on next call...');
-      await delay(15000);
-      // --- AKHIR PERBAIKAN ---
-
-    } catch (e) {
-      logger.error(`Login failed: ${e.response ? JSON.stringify(e.response.data) : e.message}`);
-      throw e;
-    }
-  }
-
-  async claimFaucet() {
-    logger.step(`Claiming from Faucet for ${this.address} (authenticated)...`);
-    try {
-      if (!this.cookies || !/privy-token=/.test(this.cookies) || !/privy-session=/.test(this.cookies) || !/privy-id-token=/.test(this.cookies)) {
-        throw new Error('Privy session cookies missing. Make sure login() ran against privy.neuraverse.neuraprotocol.io and captured cookies.');
-      }
-      if (!this.identityToken) {
-        throw new Error('identity_token missing. login() must complete successfully before claiming faucet.');
-      }
-
-      try {
-        await this.api.get(API_ENDPOINTS.ACCOUNT, {
-          headers: {
-            'accept': 'application/json',
-            'Authorization': `Bearer ${this.identityToken}`,
-            'Referer': 'https://neuraverse.neuraprotocol.io/',
-            'Origin': 'https://neuraverse.neuraprotocol.io',
-            'Cookie': this.cookies,
-          }
+/**
+ * Prompts the user for input.
+ * @param {readline.Interface} rl - The readline interface.
+ * @param {string} question - The question to ask.
+ * @returns {Promise<string>} The user's input.
+ */
+const ask = (rl, question) => {
+    return new Promise(resolve => {
+        rl.question(question, (answer) => {
+            resolve(answer);
         });
-      } catch (e) {
-        logger.warn(`Account check failed (continuing): ${e?.response?.status || ''}`);
-      }
+    });
+};
 
-      logger.info('Performing pre-flight GraphQL query...');
-      const gqlEndpoint = "https://http-testnet-graph-eth.infra.neuraprotocol.io/subgraphs/name/test-eth";
-      const gqlQuery = `
-        query GetUserTransactions($userAddress: String!, $first: Int, $skip: Int) {
-          deposits: tokensDepositeds(
-            where: { from: $userAddress }
-            first: $first
-            skip: $skip
-            orderBy: blockTimestamp
-            orderDirection: desc
-          ) { id }
-          claims: tokensClaimeds(
-            where: { recipient: $userAddress }
-            first: $first
-            skip: $skip
-            orderBy: blockTimestamp
-            orderDirection: desc
-          ) { id }
-        }`;
-      await this.api.post(gqlEndpoint, {
-        query: gqlQuery,
-        variables: { userAddress: this.address.toLowerCase(), first: 10, skip: 0 },
-        operationName: "GetUserTransactions"
-      }, {
-        headers: {
-          'accept': 'application/graphql-response+json, application/json',
-          'content-type': 'application/json'
+/**
+ * Loads accounts from the JSON file.
+ * @returns {Array<Object>} List of account objects.
+ */
+const loadAccounts = () => {
+    try {
+        if (fs.existsSync(WALLET_FILE)) {
+            const data = fs.readFileSync(WALLET_FILE, 'utf8');
+            return JSON.parse(data);
         }
-      });
-      logger.success('GraphQL query successful.');
-      await delay(1200);
-
-      const faucetHeaders = {
-        'accept': '*/*',
-        'accept-language': 'en-US,en;q=0.9',
-        'content-type': 'application/json',
-        'Authorization': `Bearer ${this.identityToken}`,
-        'Referer': 'https://neuraverse.neuraprotocol.io/?section=faucet',
-        'Origin': 'https://neuraverse.neuraprotocol.io',
-        'Cookie': this.cookies, 
-      };
-
-      const body = {
-        address: this.address,
-        userLoggedIn: true,
-        chainId: SEPOLIA_CHAIN_ID
-      };
-
-      const faucet = await this.api.post(API_ENDPOINTS.FAUCET, body, { headers: faucetHeaders });
-
-      if (faucet.data?.status === 'success' && faucet.data?.data?.transactionHash) {
-        const txHash = faucet.data.data.transactionHash;
-        logger.success(`Faucet claim successful! Tx: ${txHash}`);
-
-        await this.api.post(
-          API_ENDPOINTS.EVENTS,
-          { type: 'faucet:claimTokens' },
-          {
-            headers: {
-              'content-type': 'application/json',
-              'Authorization': `Bearer ${this.identityToken}`,
-              'Cookie': this.cookies,
-              'Referer': 'https://neuraverse.neuraprotocol.io/',
-              'Origin': 'https://neuraverse.neuraprotocol.io',
-            }
-          }
-        );
-
-        return txHash;
-      } else {
-        const message = faucet.data?.message || JSON.stringify(faucet.data);
-        throw new Error(`Faucet API returned non-success status: ${message}`);
-      }
+        return [];
     } catch (e) {
-      const status = e?.response?.status;
-      const payload = e?.response?.data ? JSON.stringify(e.response.data) : e.message;
-      logger.error(`Faucet claim failed: ${payload}`);
-      if (status) logger.error(`[x] Received Status Code: ${status}`); 
-      throw e;
+        logger.error(`Error loading accounts: ${e.message}`);
+        return [];
     }
-  }
+};
 
-  async checkBalances() {
-    logger.step(`Checking balances for ${this.address.slice(0,10)}...`);
+/**
+ * Saves the current list of accounts to the JSON file.
+ * @param {Array<Object>} accounts - List of account objects to save.
+ */
+const saveAccounts = (accounts) => {
     try {
-      const neuraBal = await this.neuraProvider.getBalance(this.address);
-      logger.info(`Neura Balance  : ${ethers.formatEther(neuraBal)} ANKR`);
-      const sepEthBal = await this.sepoliaProvider.getBalance(this.address);
-      logger.info(`Sepolia ETH Bal: ${ethers.formatEther(sepEthBal)} ETH`);
-      const t = new ethers.Contract(CONTRACTS.SEPOLIA.TANKR, ABIS.ERC20, this.sepoliaProvider);
-      const sepBal = await t.balanceOf(this.address);
-      logger.info(`Sepolia tANKR  : ${ethers.formatEther(sepBal)} tANKR`);
-    } catch { logger.error('Failed to check balances.'); }
-  }
+        fs.writeFileSync(WALLET_FILE, JSON.stringify(accounts, null, 4), 'utf8');
+        logger.success(`Accounts saved to ${WALLET_FILE}`);
+    } catch (e) {
+        logger.error(`Error saving accounts: ${e.message}`);
+    }
+};
+
+/**
+ * Shows a continuous countdown timer.
+ * @param {number} durationMs - The duration in milliseconds.
+ * @param {string} message - The message prefix.
+ */
+const showCountdown = async (durationMs, message) => {
+    let remaining = durationMs;
+    while (remaining > 0) {
+        const seconds = Math.floor(remaining / 1000);
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+
+        const timeString = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        logger.countdown(`${message} Next run in ${timeString}`);
+        
+        await delay(1000);
+        remaining -= 1000;
+    }
+    // Clear the countdown line when done
+    process.stdout.write('\r' + ' '.repeat(100) + '\r');
+};
+
+
+// --- CORE LOGIC ---
+
+/**
+ * Bot class to handle all interactions for a single account.
+ */
+class InsiderBot {
+    /**
+     * @param {string} privateKey - The private key for the account (can be null).
+     * @param {string} id - The ID token from the account file.
+     * @param {string|null} proxy - The HTTP/S proxy URL (e.g., http://user:pass@ip:port).
+     */
+    constructor(privateKey, id, proxy = null) {
+        this.privateKey = privateKey;
+        this.id = id;
+        this.proxy = proxy;
+
+        if (this.privateKey) {
+            this.wallet = new ethers.Wallet(this.privateKey);
+            this.address = this.wallet.address;
+            this.provider = new ethers.JsonRpcProvider(RPC_URL);
+            this.signer = this.wallet.connect(this.provider);
+            logger.info(`Initialized Bot for address: ${this.address}`);
+        } else {
+            this.address = "N/A (No Private Key)";
+            this.wallet = null;
+            this.provider = null;
+            this.signer = null;
+            logger.warn(`Initialized Bot with ID: ${this.id} (No Private Key)`);
+        }
+
+        this.client = axios.create({
+            baseURL: API_BASE_URL,
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.id}`,
+                'Accept': 'application/json'
+            },
+            ...(this.proxy && { httpsAgent: new HttpsProxyAgent(this.proxy) })
+        });
+    }
+
+    /**
+     * Executes the Faucet claim transaction.
+     * @returns {Promise<string>} Transaction hash.
+     */
+    async faucetClaim() {
+        logger.loading('Attempting to claim faucet...');
+        const response = await this.client.post('/faucet', {
+            address: this.address,
+        });
+
+        const { txHash, message } = response.data;
+        if (txHash) {
+            logger.success(`Faucet Claim Successful. Tx Hash: ${txHash}`);
+            return txHash;
+        } else {
+            logger.warn(`Faucet endpoint returned: ${message || JSON.stringify(response.data)}`);
+            return null;
+        }
+    }
+
+    /**
+     * Executes a Swap transaction.
+     * @returns {Promise<string>} Transaction hash.
+     */
+    async swap() {
+        logger.loading('Attempting to perform swap...');
+        const response = await this.client.post('/swap', {
+            address: this.address,
+            // You might need to adjust the amount or token addresses based on current API requirements
+            // This is a placeholder payload assuming a simple API interaction
+            amount: 0.001, 
+        });
+
+        const { txHash, message } = response.data;
+        if (txHash) {
+            logger.success(`Swap Successful. Tx Hash: ${txHash}`);
+            return txHash;
+        } else {
+             logger.warn(`Swap endpoint returned: ${message || JSON.stringify(response.data)}`);
+             return null;
+        }
+    }
+
+    /**
+     * Sends a chat message to the agent.
+     * @returns {Promise<void>}
+     */
+    async chatWithAgent() {
+        logger.loading('Chatting with agent...');
+        // The message content might need to be dynamic or configured
+        const chatMessage = "Halo! Saya ingin berbicara tentang PulseChain."; 
+        const response = await this.client.post('/chat', {
+            message: chatMessage
+        });
+        
+        logger.success(`Chat with Agent successful. Response: ${response.data.agentResponse || 'No specific response message.'}`);
+    }
+
+    /**
+     * Collects all available Pulses.
+     * @returns {Promise<void>}
+     */
+    async collectPulses() {
+        logger.loading('Collecting all pulses...');
+        const response = await this.client.post('/pulses/collect');
+        
+        logger.success(`Pulses collected. Total collected: ${response.data.pulsesCollected || 'N/A'}`);
+    }
+
+    /**
+     * Claims all available tasks.
+     * @returns {Promise<void>}
+     */
+    async claimTasks() {
+        logger.loading('Claiming all available tasks...');
+        const response = await this.client.post('/tasks/claim');
+        
+        const claimedCount = response.data.claimedTasks ? response.data.claimedTasks.length : 0;
+        logger.success(`Tasks claimed. Total claimed: ${claimedCount}`);
+    }
     
-  async performSwap(tokenIn, tokenOut, amountInStr) {
-    logger.step(`Swapping ${amountInStr} ${tokenIn.symbol} → ${tokenOut.symbol}...`);
-    try {
-        const amountInWei = ethers.parseUnits(amountInStr, tokenIn.decimals);
-        const isNativeSwapIn = tokenIn.symbol === 'ANKR';
+    /**
+     * Checks the balance of native token (PLSED) and a specific token (e.g., test token).
+     * Requires a private key to be set.
+     * @returns {Promise<void>}
+     */
+    async checkBalances() {
+        if (!this.signer) {
+            logger.warn("Cannot check balances: No signer available (Private Key missing).");
+            return;
+        }
 
-        if (!isNativeSwapIn) {
-            const tokenContract = new ethers.Contract(tokenIn.address, ABIS.ERC20, this.neuraWallet);
-            const allowance = await tokenContract.allowance(this.address, CONTRACTS.NEURA.SWAP_ROUTER);
-            if (allowance < amountInWei) {
-                logger.loading(`Approving ${tokenIn.symbol} for router...`);
-                const approveTx = await tokenContract.approve(CONTRACTS.NEURA.SWAP_ROUTER, ethers.MaxUint256);
-                const approveRcpt = await approveTx.wait();
-                if (approveRcpt.status !== 1) throw new Error('Approve transaction failed');
-                logger.success('Approval successful.');
+        logger.loading('Checking balances...');
+        try {
+            // Check native token (PLSED) balance
+            const plsedBalance = await this.provider.getBalance(this.address);
+            const plsedFormatted = ethers.formatEther(plsedBalance);
+
+            // You might need to add logic for checking a specific token balance
+            // For now, only checking native token:
+
+            logger.info(`PLSED Balance: ${plsedFormatted} PLSED`);
+
+        } catch (e) {
+            logger.error(`Failed to check balances: ${e.message}`);
+        }
+    }
+}
+
+/**
+ * Runs a function with retries on failure.
+ * @param {Function} taskFn - The function to run.
+ * @param {string} taskName - A descriptive name for the task.
+ * @returns {Promise<any>} The result of the task.
+ */
+const runTaskWithRetries = async (taskFn, taskName) => {
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            logger.loading(`[${taskName}] Attempt ${attempt}/${MAX_RETRIES}...`);
+            const result = await taskFn();
+            logger.success(`[${taskName}] Completed successfully.`);
+            return result;
+        } catch (e) {
+            const delayTime = 5000 * attempt;
+            logger.warn(`[${taskName}] Attempt ${attempt} failed: ${e.message}. Retrying in ${delayTime / 1000}s...`);
+            if (attempt < MAX_RETRIES) {
+                await delay(delayTime);
             } else {
-                logger.info('Sufficient allowance already exists.');
+                logger.error(`[${taskName}] Failed after ${MAX_RETRIES} attempts.`);
+                throw new Error(`Task failed: ${taskName}`);
             }
+        }
+    }
+};
+
+/**
+ * Main application function.
+ */
+async function main() {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+
+    let accounts = loadAccounts();
+
+    // Loop for the main menu
+    while (true) {
+        logger.banner();
+        logger.step("Main Menu");
+        console.log("1. View Accounts");
+        console.log("2. Add New Account (Private Key + ID)");
+        console.log("3. Add New Account (ID Only)");
+        console.log("4. Delete Account");
+        console.log("5. Run Daily Tasks for All Accounts");
+        console.log("6. Start Continuous Daily Runner");
+        console.log("7. Exit");
+        console.log(colors.gray + '-----------------------------------------' + colors.reset);
+
+        const choice = await ask(rl, 'Choose an option: ');
+
+        if (choice === '1') {
+            logger.section('Account List');
+            if (accounts.length === 0) {
+                logger.info('No accounts loaded.');
+            } else {
+                accounts.forEach((acc, index) => {
+                    const pkStatus = acc.privateKey ? colors.green + '[PK AVAILABLE]' + colors.reset : colors.yellow + '[PK MISSING]' + colors.reset;
+                    logger.info(`${index + 1}. ID: ${acc.id.substring(0, 10)}... | PK Status: ${pkStatus} | Proxy: ${acc.proxy || 'N/A'}`);
+                });
+            }
+            await ask(rl, '\nPress Enter to return to the main menu...');
+        } 
+        
+        else if (choice === '2' || choice === '3') {
+            logger.section('Add New Account');
+            const id = await ask(rl, 'Enter Insider ID (Bearer Token): ');
+            
+            let privateKey = null;
+            if (choice === '2') {
+                privateKey = await ask(rl, 'Enter Private Key (Optional, press Enter to skip): ');
+                if (privateKey === '') privateKey = null;
+            }
+
+            const proxy = await ask(rl, 'Enter HTTP Proxy URL (Optional, press Enter to skip): ');
+            
+            accounts.push({
+                id: id.trim(),
+                privateKey: privateKey ? privateKey.trim() : null,
+                proxy: proxy.trim() || null
+            });
+            saveAccounts(accounts);
         }
         
-        const deadlineMs = BigInt(Date.now()) + 20n * 60n * 1000n;
-        const tokenInAddressForRouter = isNativeSwapIn ? CONTRACTS.NEURA.WANKR : tokenIn.address;
-
-        const inner = encodeInnerSwap({
-          tokenIn: tokenInAddressForRouter,
-          tokenOut: tokenOut.address,
-          recipient: this.address,
-          deadlineMs,
-          amountInWei,
-        });
-        const data = encodeRouterMulticall([inner]);
-        const txValue = isNativeSwapIn ? amountInWei : 0n;
-
-        logger.info(`Sending swap transaction...`);
-        const tx = await this.neuraWallet.sendTransaction({
-          to: CONTRACTS.NEURA.SWAP_ROUTER,
-          data,
-          value: txValue,
-          gasLimit: 600_000, 
-        });
-        logger.loading(`Swap tx sent. Hash: ${tx.hash}`);
-        const rcpt = await tx.wait();
-        if (rcpt.status !== 1) throw new Error(`Swap tx reverted on-chain.`);
-        logger.success(`Swap successful: ${rcpt.hash}`);
-    } catch (e) {
-        const msg = e?.shortMessage || e?.message || String(e);
-        logger.error(`Swap failed: ${msg}`);
-        throw e;
-    }
-  }
-  
-  async waitForNeuraBalance(minEth = '0.001', maxAttempts = 15, stepMs = 5000) {
-    logger.step(`Waiting for native ANKR balance on Neura to be at least ${minEth} ANKR...`);
-    const minWei = ethers.parseEther(minEth);
-    for (let i=0;i<maxAttempts;i++){
-      const bal = await this.neuraProvider.getBalance(this.address);
-      logger.info(`Attempt ${i+1}/${maxAttempts}: Current Neura balance is ${ethers.formatEther(bal)} ANKR.`);
-      if (bal >= minWei) { logger.success('Neura balance is sufficient!'); return true; }
-      logger.countdown(`Checking in ${Math.round(stepMs / 1000)}s...`); // Use new countdown
-      await delay(stepMs);
-    }
-    throw new Error(`Timeout: Neura ANKR balance < ${minEth}`);
-  }
-
-  async bridgeNeuraToSepolia(amountEth) {
-    logger.step(`Bridging ${amountEth} ANKR from Neura → Sepolia...`);
-    try {
-      const amount = ethers.parseEther(amountEth);
-      const bridge = new ethers.Contract(CONTRACTS.NEURA.BRIDGE, ABIS.NEURA_BRIDGE, this.neuraWallet);
-      const tx = await bridge.deposit(this.address, SEPOLIA_CHAIN_ID, { value: amount });
-      logger.loading(`Bridge deposit tx (Neura): ${tx.hash}`);
-      await tx.wait();
-      logger.success(`Bridge deposit confirmed.`);
-    } catch (e) {
-      logger.error(`Bridge Neura→Sepolia failed: ${e?.message || String(e)}`);
-      throw e;
-    }
-  }
-
-  async bridgeSepoliaToNeura(amountEth) {
-    logger.step(`Bridging ${amountEth} tANKR from Sepolia → Neura...`);
-    try {
-      const amount = ethers.parseEther(amountEth);
-      const token = new ethers.Contract(CONTRACTS.SEPOLIA.TANKR, ABIS.ERC20, this.sepoliaWallet);
-      const bridge = new ethers.Contract(CONTRACTS.SEPOLIA.BRIDGE, ABIS.SEPOLIA_BRIDGE, this.sepoliaWallet);
-      const allowance = await token.allowance(this.address, CONTRACTS.SEPOLIA.BRIDGE);
-      if (allowance < amount) {
-        logger.loading('Approving bridge to spend tANKR...');
-        const approveTx = await token.approve(CONTRACTS.SEPOLIA.BRIDGE, ethers.MaxUint256);
-        await approveTx.wait();
-        logger.success(`Approve OK.`);
-      } else {
-        logger.info('Sufficient allowance already set.');
-      }
-      logger.loading('Depositing tANKR to bridge (Sepolia)...');
-      const depTx = await bridge.deposit(amount, this.address);
-      await depTx.wait();
-      logger.success(`Bridge deposit (Sepolia) OK.`);
-    } catch (e) {
-      logger.error(`Bridge Sepolia→Neura failed: ${e?.message || String(e)}`);
-      throw e;
-    }
-  }
-
-  async claimValidatedOnSepolia({ waitMs = 60_000, page = 1, limit = 20 } = {}) {
-    logger.step(`Auto-claim Pending Bridge Tx ...`);
-    if (waitMs > 0) {
-      logger.loading(`Waiting ${Math.round(waitMs / 1000)} seconds for validation...`);
-      await delay(waitMs);
-    }
-
-    try {
-      const url = API_ENDPOINTS.claimList(this.address.toLowerCase(), page, limit);
-      logger.info(`Fetching claim list: ${url}`);
-      const resp = await this.api.get(url, {
-        headers: {
-          accept: '*/*',
-          'content-type': 'application/json',
-          Referer: 'https://neuraverse.neuraprotocol.io/',
-        },
-      });
-
-      const items = resp.data?.transactions || [];
-      if (!items.length) {
-        logger.info('There are no transactions to claim.');
-        return;
-      }
-
-      const toClaim = items.filter(
-        (x) =>
-          String(x.chainId) === String(SEPOLIA_CHAIN_ID) && 
-          x.status === 'validated' &&                        
-          !!x.encodedMessage && Array.isArray(x.messageSignatures) && x.messageSignatures.length > 0
-      );
-
-      if (!toClaim.length) {
-        logger.info('There are no validated transactions to claim (the rest have already been claimed).');
-        return;
-      }
-
-      logger.info(`Found ${toClaim.length} tx validated → Claim on Sepolia...`);
-
-      const bridgeClaim = new ethers.Contract(CONTRACTS.SEPOLIA.BRIDGE, ABIS.BRIDGE_CLAIM, this.sepoliaWallet);
-
-      for (const txinfo of toClaim) {
-        const short = `${txinfo.transactionHash?.slice(0,10) || txinfo.id?.slice(0,10) || '0x...'}`;
-        try {
-          logger.loading(`Claiming ${short} ...`);
-          const claimTx = await bridgeClaim.claim(txinfo.encodedMessage, txinfo.messageSignatures);
-          const rcpt = await claimTx.wait();
-          if (rcpt.status !== 1) throw new Error('Claim tx reverted');
-          logger.success(`Claim OK: ${rcpt.hash}`);
-        } catch (e) {
-          const msg = e?.info?.error?.message || e?.shortMessage || e?.message || String(e);
-          if (/already\s*claimed|already\s*processed|duplicate|revert/i.test(msg)) {
-            logger.warn(`Skip (Already claimed): ${short}`);
-            continue;
-          }
-          logger.error(`Failed to claim ${short}: ${msg}`);
-        }
-      }
-    } catch (e) {
-      logger.error(`Failed to fetch/execute claim list: ${e?.message || String(e)}`);
-    }
-  }
-
-  async claimPulses() {
-    logger.step('Claiming Pulses...');
-    try {
-      const acc = await this.api.get(API_ENDPOINTS.ACCOUNT);
-      const pulses = acc.data.pulses.data || [];
-      const todo = pulses.filter(p => !p.isCollected);
-      if (!todo.length) { logger.info('All pulses have already been collected today.'); return; }
-      logger.info(`Found ${todo.length} uncollected pulses.`);
-      for (const p of todo) {
-        await this.api.post(API_ENDPOINTS.EVENTS, { type: 'pulse:collectPulse', payload: { id: p.id } });
-        logger.success(`Collected ${p.id}.`); await delay(1000);
-      }
-    } catch (e) { logger.error(`Failed to claim pulses: ${e.message}`); throw e; }
-  }
-
-  async chatWithAgent() {
-    logger.step('Chatting with a random Agent...');
-    try {
-      const v = await this.api.get(API_ENDPOINTS.VALIDATORS);
-      const list = v.data.validators || [];
-      if (!list.length) { logger.warn('No validators found to chat with.'); return; }
-      const pick = list[Math.floor(Math.random() * list.length)];
-      const payload = { messages: [ { role: 'user', content: 'hello' } ] };
-      const resp = await this.api.post(`${API_ENDPOINTS.CHAT}${pick.id}`, payload);
-      const reply = resp.data.messages?.[0]?.content || '';
-      logger.success(`Agent replied: "${reply.substring(0, 50)}..."`);
-    } catch (e) { logger.error(`Chat failed: ${e.message}`); throw e; }
-  }
-
-  async claimTasks() {
-    logger.step('Checking and claiming tasks...');
-    try {
-      const tasks = await this.api.get(API_ENDPOINTS.TASKS);
-      const claimable = (tasks.data.tasks || []).filter(t => t.status === 'claimable');
-      if (!claimable.length) { logger.info('No new tasks to claim.'); return; }
-      logger.info(`Found ${claimable.length} claimable tasks.`);
-      for (const t of claimable) {
-        await this.api.post(API_ENDPOINTS.taskClaim(t.id));
-        logger.success(`Claimed: "${t.name}" (+${t.points} pts)`);
-        await delay(1000);
-      }
-    } catch (e) { logger.error(`Failed to claim tasks: ${e.message}`); throw e; }
-  }
-}
-
-async function loadExistingWalletsFlow(
-  proxies, 
-  bridgeSepoliaToNeuraAmount, 
-  bridgeNeuraToSepoliaAmount, 
-  swapAmountZtusd, 
-  swapRepeats, 
-  ztUSDToken, 
-  mollyToken
-) {
-  const pks = Object.keys(process.env).filter(k => k.startsWith('PRIVATE_KEY_')).map(k => process.env[k]).filter(Boolean);
-  if (!pks.length) { logger.error('No private keys found in .env file.'); return; }
-  logger.info(`Found ${pks.length} wallets in .env file.`);
-  
-  if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && (!ztUSDToken || !mollyToken)) {
-    logger.warn('Could not find ZTUSD or MOLLY in token list. Swap step will be skipped for this cycle.');
-  }
-
-  const wallets = Object.keys(process.env)
-    .filter(k => k.startsWith('PRIVATE_KEY_'))
-    .map(k => process.env[k])
-    .filter(Boolean);
-  
-  for (let idx = 0; idx < wallets.length; idx++) {
-    const proxy = (proxies || []).length
-      ? proxies[Math.floor(Math.random() * proxies.length)]
-      : undefined;
-
-    const pk = wallets[idx];
-    const bot = new NeuraBot(pk, proxy);
-    logger.section(`[Wallet ${idx+1}/${wallets.length}] ${bot.address.slice(0,10)}... (proxy ${proxy ? 'ON' : 'OFF'})`);
-
-    try {
-      await bot.executeWithRetry(() => bot.login());
-      await bot.checkBalances();
-      
-      const tasks = [];
-
-      // 1. Faucet (Sepolia)
-      tasks.push({ name: 'Claim Faucet', fn: () => bot.claimFaucet() });
-      tasks.push({ name: 'Check Balances After Faucet', fn: () => bot.checkBalances() });
-
-      // 2. Claim Pending Bridge (Sepolia -> Neura)
-      tasks.push({ name: 'Claim Pending Bridge (Sepolia→Neura)', fn: () => bot.claimValidatedOnSepolia({ waitMs: 0 }) });
-      
-      // 3. Bridge (Sepolia -> Neura)
-      if (parseFloat(bridgeSepoliaToNeuraAmount) > 0) {
-        tasks.push({ 
-          name: `Bridge Sepolia to Neura (${bridgeSepoliaToNeuraAmount} tANKR)`, 
-          fn: async () => {
-            await bot.bridgeSepoliaToNeura(bridgeSepoliaToNeuraAmount);
-            logger.loading('Waiting 30 seconds for funds to arrive on Neura for gas...');
-            await delay(30000); 
-          }
-        });
-        tasks.push({ name: 'Check Balances After Bridge', fn: () => bot.checkBalances() });
-      } else {
-        logger.warn('Skipping Sepolia → Neura Bridge: Amount is 0 or invalid. Ensure you have ANKR gas on Neura for the swap.');
-      }
-
-      // 4. Swap (ZTUSD <-> MOLLY)
-      const canSwap = parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && ztUSDToken && mollyToken;
-      if (canSwap) {
-        for(let j = 0; j < swapRepeats; j++) {
-            tasks.push({
-                name: `[Swap Cycle ${j+1}/${swapRepeats}] ZTUSD → MOLLY`,
-                fn: async () => {
-                  
-                  await bot.performSwap(ztUSDToken, mollyToken, swapAmountZtusd);
-
-                  logger.loading('Waiting 5 seconds before reverse swap...');
-                  await delay(5000);
-
-                  const mollyCtr = new ethers.Contract(mollyToken.address, ABIS.ERC20, bot.neuraWallet);
-                  const balMolly = await mollyCtr.balanceOf(bot.address);
-                  if (balMolly > 0n) {
-                    const mollyAmountStr = ethers.formatUnits(balMolly, mollyToken.decimals);
-                    await bot.performSwap(mollyToken, ztUSDToken, mollyAmountStr);
-                  } else {
-                    logger.warn('No MOLLY balance detected for reverse swap. Skipping.');
-                  }
-                }
+        else if (choice === '4') {
+            logger.section('Delete Account');
+            if (accounts.length === 0) {
+                logger.warn('No accounts to delete.');
+                await ask(rl, '\nPress Enter to return to the main menu...');
+                continue;
+            }
+            accounts.forEach((acc, index) => {
+                logger.info(`${index + 1}. ID: ${acc.id.substring(0, 10)}... | Proxy: ${acc.proxy || 'N/A'}`);
             });
+            const indexToDelete = parseInt(await ask(rl, 'Enter the number of the account to delete: '), 10);
+            
+            if (indexToDelete > 0 && indexToDelete <= accounts.length) {
+                const deletedAccount = accounts.splice(indexToDelete - 1, 1);
+                saveAccounts(accounts);
+                logger.success(`Account with ID ${deletedAccount[0].id.substring(0, 10)}... deleted.`);
+            } else {
+                logger.error('Invalid account number.');
+            }
+            await ask(rl, '\nPress Enter to return to the main menu...');
         }
-      }
-      
-      // 5. Bridge (Neura -> Sepolia)
-      if (parseFloat(bridgeNeuraToSepoliaAmount) > 0) {
-        tasks.push({
-          name: `Bridge Neura to Sepolia (${bridgeNeuraToSepoliaAmount} ANKR)`,
-          fn: async () => {
-            await bot.waitForNeuraBalance(bridgeNeuraToSepoliaAmount);
-            await bot.bridgeNeuraToSepolia(bridgeNeuraToSepoliaAmount);
-          }
-        });
-      }
+        
+        else if (choice === '5' || choice === '6') {
+            
+            if (accounts.length === 0) {
+                logger.critical('No accounts loaded. Please add an account first.');
+                await ask(rl, '\nPress Enter to return to the main menu...');
+                continue;
+            }
+            
+            if (choice === '6') {
+                logger.info("Starting continuous daily runner. Press Ctrl+C to stop.");
+            }
+            
+            while (choice === '5' || choice === '6') {
+                logger.section('STARTING DAILY RUN');
 
-      // 6. Claim Tasks & Pulses
-      tasks.push({ name: 'Claim Pulses', fn: () => bot.claimPulses() });
-      tasks.push({ name: 'Chat with Agent', fn: () => bot.chatWithAgent() });
-      tasks.push({ name: 'Claim Tasks', fn: () => bot.claimTasks() });
-      
-      // 7. Final Balance Check
-      tasks.push({ name: 'Final Balance Check', fn: () => bot.checkBalances() });
+                for (const account of accounts) {
+                    logger.step(`--- Processing Account ID: ${account.id.substring(0, 10)}... ---`);
+                    const bot = new InsiderBot(account.privateKey, account.id, account.proxy);
 
-      logger.info(`Starting automatic sequence of ${tasks.length} tasks...`);
-      for (const task of tasks) {
-        await runTaskWithRetries(task.fn, task.name);
-        logger.loading('Cooling down 5 seconds before next step...');
-        await delay(5000);
-      }
+                    try {
+                        await delay(1000); // Small initial delay
 
-    } catch (e) {
-      logger.critical(`A critical error occurred for wallet ${bot.address}. Moving to next wallet. Error: ${e.message}`);
+                        // 1. On-Chain Tasks (requires Private Key)
+                        if (bot.privateKey) {
+                            logger.step("Starting On-Chain Tasks (Faucet, Swap, Balance Check)");
+                            await runTaskWithRetries(() => bot.faucetClaim(), "Faucet Claim");
+                            await delay(5000); // Cooldown for faucet/swap
+                            
+                            // Swap is often rate-limited or only done once
+                            // Consider if you want to run this daily or once
+                            // For now, let's run it daily as part of the process
+                            await runTaskWithRetries(() => bot.swap(), "Token Swap");
+                            await delay(5000); 
+                            
+                            await bot.checkBalances();
+
+                        } else {
+                            logger.warn(`Skipping on-chain tasks (Faucet, Swap) for Account ${account.id.substring(0, 10)}... - No Private Key.`);
+                        }
+
+                        // 2. Off-Chain/API Tasks (only requires ID/Bearer Token)
+                        logger.step("Starting Off-Chain API Tasks (Chat, Pulses, Claim)");
+
+                        await runTaskWithRetries(() => bot.chatWithAgent(), "Chat with Agent");
+                        await delay(2000);
+
+                        await runTaskWithRetries(() => bot.collectPulses(), "Collect All Pulses");
+                        await delay(2000);
+
+                        await runTaskWithRetries(() => bot.claimTasks(), "Claim All Available Tasks");
+
+                    } catch (e) {
+                        logger.error(`Critical error on Account ${account.id.substring(0, 10)}...: ${e.message}`);
+                    }
+                    logger.success(`--- Finished Account ${account.id.substring(0, 10)}... ---`);
+                    await delay(2000); // Cooldown between accounts
+                }
+                
+                logger.summary('--- DAILY RUN COMPLETED FOR ALL ACCOUNTS ---');
+
+                if (choice === '5') {
+                    // One-time run, exit inner loop
+                    break;
+                }
+                
+                // For Continuous Daily Runner (choice === '6')
+                const DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+                await showCountdown(DAILY_COOLDOWN_MS, 'Waiting for next daily run...');
+            
+            }
+        }
+
+        else if (choice === '7') {
+            logger.info('Exiting script. Goodbye!');
+            rl.close();
+            break;
+        }
+
+        else {
+            logger.error('Invalid selection.');
+            await ask(rl, '\nPress Enter to return to the main menu...');
+        }
     }
-    
-    if (idx < wallets.length - 1) {
-        // Jeda acak 60 - 180 detik (1 - 3 menit)
-        const sleepDuration = (Math.floor(Math.random() * (180 - 60 + 1)) + 60) * 1000; 
-        logger.section(`[COOLDOWN] Waiting ${Math.round(sleepDuration / 1000)} seconds before starting next wallet.`);
-        await countdownAndDelay(sleepDuration);
-    }
-  }
-  return;
 }
 
-async function main() {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const proxies = fs.existsSync('proxies.txt') ? fs.readFileSync('proxies.txt','utf-8').split('\n').filter(Boolean) : [];
-  
-  logger.banner();
-  proxies.length ? logger.info(`Loaded ${proxies.length} proxies.\n`) : logger.warn('No proxies loaded. Running in direct mode.\n');
-  
-  // --- PENGATURAN PARAMETER OTOMATIS ---
-  logger.section('PENGATURAN PARAMETER OTOMATIS');
-  const bridgeSepoliaToNeuraAmount = await ask(rl, 'Amount to bridge Sepolia→Neura (enter 0 to skip): ');
-  const bridgeNeuraToSepoliaAmount = await ask(rl, 'Amount to bridge Neura→Sepolia (enter 0 to skip): ');
-  const swapAmountZtusd = await ask(rl, 'Amount of ZTUSD to swap to MOLLY (enter 0 to skip): ');
-  const swapRepeatStr = await ask(rl, 'How many times to perform ZTUSD ↔ MOLLY swap? (e.g., 1): ');
-  const swapRepeats = parseInt(swapRepeatStr, 10) || 0;
-  
-  // TIDAK LAGI MENGGANTUNGKAN PADA API, LANGSUNG DARI HARDCODE
-  const tokens = await fetchAvailableTokens();
-  const ztUSDToken = tokens.find(t => t.symbol.toUpperCase() === 'ZTUSD');
-  const mollyToken = tokens.find(t => t.symbol.toUpperCase() === 'MOLLY');
-  
-  if (parseFloat(swapAmountZtusd) > 0 && swapRepeats > 0 && (!ztUSDToken || !mollyToken)) {
-    logger.error('Could not find ZTUSD or MOLLY in token list. Please fix the token list or set swap amount to 0.');
-    rl.close();
-    return;
-  }
-  
-  rl.close(); 
-
-  // --- AUTOMATION LOOP 24 JAM ---
-  const DELAY_DURATION = 24 * 60 * 60 * 1000; // 24 jam dalam ms
-
-  while (true) {
-    const cycleStartTime = Date.now();
-    logger.section(`STARTING NEW AUTOMATED CYCLE: ${new Date().toLocaleString()}`);
-    
-    await loadExistingWalletsFlow(
-      proxies,
-      bridgeSepoliaToNeuraAmount,
-      bridgeNeuraToSepoliaAmount,
-      swapAmountZtusd,
-      swapRepeats,
-      ztUSDToken,
-      mollyToken
-    );
-    
-    const elapsed = Date.now() - cycleStartTime;
-    const waitTime = DELAY_DURATION - elapsed;
-    
-    if (waitTime > 0) {
-      logger.section(`CYCLE COMPLETE. WAITING 24 HOURS UNTIL NEXT RUN.`);
-      await countdownAndDelay(waitTime);
-    } else {
-      logger.warn('Previous cycle took longer than 24 hours. Starting next cycle immediately.');
-    }
-  }
-}
-
-main().catch((err) => {
-  logger.critical(`A critical error occurred: ${err.message}`); 
-  process.exit(1);
+// Start the application
+main().catch(error => {
+    logger.critical(`An unhandled error occurred: ${error.message}`);
+    process.exit(1);
 });
